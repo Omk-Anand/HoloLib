@@ -2,7 +2,7 @@
 #include <cmath>
 
 int VoltageController::sign(double x) {
-        return (x > 0) - (x < 0); // returns 1, 0, or -1
+        return (x > 0) - (x < 0); 
 }
 
 VoltageController::VoltageController(double kv, double kaStraight, double kaTurn, double ksStraight, double ksTurn, double kp,

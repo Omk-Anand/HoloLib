@@ -2,87 +2,177 @@
 
 #include "Eigen/Dense"
 #include "pros/rtos.hpp"
-#include <vector>
-#include <string>
-#include <atomic>
 
-// Forward declarations
+#include <vector>
+#include <atomic>
+#include <cstdint>
+
+// ============================================================
+// FORWARD DECLARATIONS
+// ============================================================
+
 class Chassis;
 struct Path;
 struct Pose;
 
+// ============================================================
+// TRAJECTORY STATE
+// ============================================================
+
 struct State {
-    double x;
-    double y;
-    double heading;
-    double linear_vel;
-    double angular_vel;
+
+    float x;
+    float y;
+
+    // Radians
+    float heading;
 };
 
-class LTVPathFollower {
+// ============================================================
+// HOLOMONIC LQR CONTROLLER
+// ============================================================
+
+class HolonomicLQR {
+
 public:
-    struct ltvConfig {
-        bool backwards = false;
+
+    // ========================================================
+    // CONFIG
+    // ========================================================
+
+    struct Config {
+
+        // ================================================
+        // STATE COST MATRIX (Q)
+        // ================================================
+
+        float q_x = 18.0f;
+        float q_y = 18.0f;
+        float q_theta = 10.0f;
+
+        // ================================================
+        // CONTROL COST MATRIX (R)
+        // ================================================
+
+        float r_x = 0.9f;
+        float r_y = 0.9f;
+        float r_theta = 0.7f;
+
+        // ================================================
+        // MAX VOLTAGES
+        // ================================================
+
+        float max_x_voltage = 12000.0f;
+        float max_y_voltage = 12000.0f;
+        float max_theta_voltage = 12000.0f;
+
+        // ================================================
+        // EXIT CONDITIONS
+        // ================================================
+
+        float position_tolerance = 0.5f;
+        float theta_tolerance = 0.03f;
+
+        // ================================================
+        // TIMING
+        // ================================================
+
+        uint32_t timeout = 5000;
+
+        // ================================================
+        // DEBUGGING
+        // ================================================
+
         bool log = false;
-        bool test = false;
-        bool turnFirst = false;
-        float max_lin_correction = 99999.0f;
-        float max_ang_correction = 999999.0f;
-
-        float q_x = 10;
-        float q_y = 270.0;
-        float q_theta = 0.25f * 30;
-        float r_ang = 0.25f;
-        float r_vel = 1.0;
-
-        float q_x_b = 5;
-        float q_y_b = 270;
-        float q_theta_b = 0.01;
-        float r_ang_b = 0.3; 
-        float r_vel_b = 1.0f;
-        
-        float q_scalar = 1.0f; 
     };
 
-    LTVPathFollower(Chassis* chassis_ptr);
-    
-    void followPath(const Path& path, const ltvConfig& l_config);
-    void waitUntilDone();
-    void waitUntil(float dist_inches);
-    void waitUntil(float x_inch, float y_inch, float radius_inch = 2.0f);
+    // ========================================================
+    // CONSTRUCTOR
+    // ========================================================
+
+    HolonomicLQR(
+        Chassis* chassis_ptr,
+        float dtSeconds = 0.01f
+    );
+
+    // ========================================================
+    // PATH FOLLOWING
+    // ========================================================
+
+    void followPath(
+        const Path& path
+    );
+
+    // ========================================================
+    // POINT-TO-POINT
+    // ========================================================
+
+    void moveToPose(
+        float tx,
+        float ty,
+        float targetThetaRad,
+        uint32_t timeout = 5000
+    );
+
+    // ========================================================
+    // TASK CONTROL
+    // ========================================================
+
     void cancel();
+
     bool isRunning();
 
+    void waitUntilDone();
+
 private:
-    static constexpr float INCH_TO_METER = 0.0254f;
 
-    Chassis* chassis; // Reference back to control chassis properties
+    // ========================================================
+    // INTERNALS
+    // ========================================================
 
-    pros::Task* task = nullptr;
-    std::atomic<bool> is_running {false};
-    std::atomic<bool> cancel_request {false};
-    std::atomic<float> distance_traveled_inches {0.0f};
-    
-    struct TaskParams {
-        LTVPathFollower* instance;
-        Path path;
-        ltvConfig config;
-    };
+    Chassis* chassis;
 
-    static void task_trampoline(void* params);
-    void followPathImpl(const Path& path, const ltvConfig& l_config);
-    
-    Eigen::MatrixXf dareSolver(const Eigen::MatrixXf &A, const Eigen::MatrixXf &B, const Eigen::MatrixXf &Q, const Eigen::MatrixXf &R);
-    std::pair<Eigen::MatrixXf, Eigen::MatrixXf> discretizeAB(const Eigen::MatrixXf& contA, const Eigen::MatrixXf& contB, double dtSeconds);
-    
-    static std::vector<State> prepare_trajectory(const Path& path);
-    static double angleError(double robotAngle, double targetAngle);
-    static double clamp(double value, double min, double max);
+    float dt;
 
-    class Vector2 {
-    public:
-        Vector2(float x, float y);
-        std::string latex() const;
-        float x, y;
-    };
+    Eigen::Matrix3f K;
+
+    std::atomic<bool> isRunningFlag {false};
+
+    std::atomic<bool> cancelFlag {false};
+
+    // ========================================================
+    // LQR
+    // ========================================================
+
+    void computeLQRGain();
+
+    Eigen::Matrix3f dareSolver(
+        const Eigen::Matrix3f& A,
+        const Eigen::Matrix3f& B,
+        const Eigen::Matrix3f& Q,
+        const Eigen::Matrix3f& R
+    );
+
+    // ========================================================
+    // TRAJECTORY
+    // ========================================================
+
+    static std::vector<State> prepareTrajectory(
+        const Path& path
+    );
+
+    // ========================================================
+    // HELPERS
+    // ========================================================
+
+    static float angleError(
+        float current,
+        float target
+    );
+
+    static float clamp(
+        float value,
+        float min,
+        float max
+    );
 };

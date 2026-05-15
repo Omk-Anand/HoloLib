@@ -1,95 +1,134 @@
 #pragma once
+
+#include "api.h"
+#include "PID.h" 
+#include "Eigen/Core"
+#include "Eigen/Geometry"
 #include <vector>
 #include <cmath>
-#include <iostream>
-#include <memory>
-#include "pros/motor_group.hpp"
-#include "motionControllers/velocityController.h"
+#include <algorithm>
 
-// Define core tracking structs globally
+class EncoderKalmanFilter {
+public:
+    EncoderKalmanFilter(float process_noise = 0.1f, float measurement_noise = 1.0f);
+    float update(float measured_position, float dt);
+
+private:
+    Eigen::Vector2f x;
+    Eigen::Matrix2f P, Q;
+    Eigen::RowVector2f H;
+    float R;
+};
+
+
+struct ScheduledGain {
+    float threshold;
+    PIDGains gains;
+};
+
+class GainScheduler {
+public:
+    void addStep(float threshold, float kp, float ki, float kd) {
+        schedules.push_back({threshold, {kp, ki, kd}});
+        std::sort(schedules.begin(), schedules.end(), [](const ScheduledGain& a, const ScheduledGain& b) {
+            return a.threshold < b.threshold;
+        });
+    }
+
+    PIDGains getGains(float error) {
+        float absError = std::abs(error);
+
+        if (schedules.empty()) return {0, 0, 0};
+                if (absError <= schedules.front().threshold) {
+            return schedules.front().gains;
+        }
+        if (absError >= schedules.back().threshold) {
+            return schedules.back().gains;
+        }
+        for (size_t i = 0; i < schedules.size() - 1; ++i) {
+            const auto& p1 = schedules[i];
+            const auto& p2 = schedules[i+1];
+
+            if (absError >= p1.threshold && absError <= p2.threshold) {
+                float t = (absError - p1.threshold) / (p2.threshold - p1.threshold);
+                float kp = p1.gains.kP + t * (p2.gains.kP - p1.gains.kP);
+                float ki = p1.gains.kI + t * (p2.gains.kI - p1.gains.kI);
+                float kd = p1.gains.kD + t * (p2.gains.kD - p1.gains.kD);
+
+                return {kp, ki, kd};
+            }
+        }
+        return schedules.back().gains;
+    }
+
+private:
+    std::vector<ScheduledGain> schedules;
+};
+
 struct Pose {
     float x, y, theta;
-    float distance(const Pose& other) const {
-        return std::hypot(x - other.x, y - other.y);
-    }
 };
 
-struct Path {
-    std::vector<std::pair<float, float>> Poses;
-    std::vector<std::pair<float, float>> Velocities;
-    int timestep_duration_msec = 10;
+struct XDriveVoltages {
+    float fl, fr, bl, br;
 };
 
-class Chassis; // Forward declare
+struct ChassisConfig {
+    float trackWidth, wheelDiameter, gearRatio;
+};
 
-#include "motionControllers/ltv.h" 
+struct DriveCurve
+{
+    float curve_multipler = 1;
+    float deadzone = 0;
+    float minimum_output = 0;
+};
+
+struct DriveCurves
+{
+    DriveCurve movement, rotation;
+};
+
+struct MoveParams {
+    float maxTranslationSpeed = 12000;
+    float maxRotationSpeed = 6000;
+
+    float exitRange = 1.0;
+
+    uint32_t timeout = 3000;
+
+    bool async = false;
+};
 
 class Chassis {
-private:
-    const float INCH_TO_METER = 0.0254f;
-    Pose pose{0,0,0};
-
-    std::vector<std::int8_t> rightMotorPorts;
-    std::vector<std::int8_t> leftMotorPorts;
-    
-    pros::MotorGroup rightMotors;
-    pros::MotorGroup leftMotors;
-
-    enum chassisModel { Differential, XDrive };
-    chassisModel model = Differential;
-
-    // Drivetrain Physical Constants
-    float trackWidth = 10 * 0.0254f;
-    float wheelDiameter = 3.25f; // inches
-    float gearRatio = 1.0f; // Output RPM / Motor RPM
-    float rpmToMpsConversion = 0.00324173f; // Default fallback
-
-    // Velocity Controller
-    float integralWindup = 5000;
-    VelocityControllerConfig config{0,0,0,0,0,0,0};
-    VoltageController controller;
-
-    // LTV Control
-    LTVPathFollower* ltv;
-    LTVPathFollower::ltvConfig defaultLtvConfig; // Stores the global LTV settings
-
 public:
-    bool abortAuton = false; 
-
-    Chassis(std::vector<std::int8_t> rightMotors, std::vector<std::int8_t> leftMotors);
-    ~Chassis();
-
-    void brake();
-    void cancelMotion();
-    
-    void setChassisModelDifferential();
-    void setChassisModelXDrive();
-    
+    Chassis(pros::Motor fl, pros::Motor fr, pros::Motor bl, pros::Motor br, pros::Imu imu_sensor, ChassisConfig config);
+    void setXGains(std::vector<ScheduledGain> steps);
+    void setYGains(std::vector<ScheduledGain> steps);
+    void setThetaGains(std::vector<ScheduledGain> steps);
     void setPose(float x, float y, float theta);
-    Pose getPose();
-    
-    bool detectCollision();
-    
-    void tank(int right, int left);
-    void tank(float lin_vel, float ang_vel, const VelocityControllerConfig &config, unsigned int time);
-    
-    // --- Modular Setup API ---
-    void setDrivetrainConstants(float wheel_diameter_inches, float gear_ratio, float track_width_inches);
-    void setVelocityController(float kV = 0, float KA_turn = 0, float KA_straight = 0, float KS_turn = 0, 
-                               float KS_straight = 0, float KP_straight = 0, float KI_straight = 0, 
-                               float integral_windup = 0);
-    void setLTVParameters(float q_x, float q_y, float q_theta, float r_vel, float r_ang, 
-                          float max_lin_corr = 99999.0f, float max_ang_corr = 999999.0f);
-    void setLTVBackwardsParameters(float q_x_b, float q_y_b, float q_theta_b, float r_vel_b, float r_ang_b);
+    Pose getPose(bool radians = false);
+    void brake();
+    void setMotorVoltages(XDriveVoltages v);
+    XDriveVoltages calculateHolonomic(float vx, float vy, float vt);
 
-    // --- LTV Integration API ---
-    void executeVelocityCommand(float v_cmd, float w_cmd);
-    
-    // Overloaded to allow using default params OR specific params
-    void followPath(const Path& path); 
-    void followPath(const Path& path, const LTVPathFollower::ltvConfig& l_config);
-    
-    void waitUntilDone();
-    void waitUntil(float dist_inches);
-    void waitUntil(float x_inch, float y_inch, float radius_inch = 2.0f);
+    void moveToPoint(float x, float y, MoveParams params = {}, bool AngleCorrection = false);
+    void turnToHeading(float targetDeg, MoveParams params = {});
+    void turnToPoint(float tx, float ty, MoveParams params = {});
+    void moveToPose(float tx, float ty, float targetThetaDeg, MoveParams params = {});
+    void swing(float targetThetaDeg, bool leftSide, MoveParams params = {});
+    void curveCircle(float targetThetaDeg, float radius, MoveParams params = {});
+    void driveControl(float forward_power, float sideways_power, float rotational_power, DriveCurves drivecurves);
+
+private:
+    pros::Motor frontLeft, frontRight, backLeft, backRight;
+    pros::Imu imu;
+    ChassisConfig config;
+    GainScheduler xSched, ySched, thetaSched;
+    Pose currentPose{0, 0, 0};
+    pros::Mutex poseMutex;
+    EncoderKalmanFilter kf_fl, kf_fr, kf_bl, kf_br;
+    float prev_fl = 0, prev_fr = 0, prev_bl = 0, prev_br = 0, prev_heading = 0;
+    void odometryTask();
+    friend void odomTaskTrampoline(void* param);
 };

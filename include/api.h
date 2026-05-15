@@ -27,7 +27,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
-#else /* (not) __cplusplus */
+#else 
 #include <errno.h>
 #include <math.h>
 #include <stdbool.h>
@@ -36,7 +36,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#endif /* __cplusplus */
+#endif
 
 #include "pros/adi.h"
 #include "pros/ai_vision.h"
