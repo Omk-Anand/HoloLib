@@ -3,176 +3,80 @@
 #include "Eigen/Dense"
 #include "pros/rtos.hpp"
 
-#include <vector>
 #include <atomic>
 #include <cstdint>
-
-// ============================================================
-// FORWARD DECLARATIONS
-// ============================================================
+#include <vector>
 
 class Chassis;
 struct Path;
 struct Pose;
 
-// ============================================================
-// TRAJECTORY STATE
-// ============================================================
-
 struct State {
 
-    float x;
-    float y;
+  float x;
+  float y;
 
-    // Radians
-    float heading;
+  float heading;
 };
-
-// ============================================================
-// HOLOMONIC LQR CONTROLLER
-// ============================================================
 
 class HolonomicLQR {
 
 public:
+  struct Config {
 
-    // ========================================================
-    // CONFIG
-    // ========================================================
+    float q_x = 18.0f;
+    float q_y = 18.0f;
+    float q_theta = 10.0f;
 
-    struct Config {
+    float r_x = 0.9f;
+    float r_y = 0.9f;
+    float r_theta = 0.7f;
 
-        // ================================================
-        // STATE COST MATRIX (Q)
-        // ================================================
+    float max_x_voltage = 12000.0f;
+    float max_y_voltage = 12000.0f;
+    float max_theta_voltage = 12000.0f;
 
-        float q_x = 18.0f;
-        float q_y = 18.0f;
-        float q_theta = 10.0f;
+    float position_tolerance = 0.5f;
+    float theta_tolerance = 0.03f;
 
-        // ================================================
-        // CONTROL COST MATRIX (R)
-        // ================================================
+    uint32_t timeout = 5000;
 
-        float r_x = 0.9f;
-        float r_y = 0.9f;
-        float r_theta = 0.7f;
+    bool log = false;
+  };
 
-        // ================================================
-        // MAX VOLTAGES
-        // ================================================
+  HolonomicLQR(Chassis *chassis_ptr, float dtSeconds = 0.01f);
 
-        float max_x_voltage = 12000.0f;
-        float max_y_voltage = 12000.0f;
-        float max_theta_voltage = 12000.0f;
+  void followPath(const Path &path);
 
-        // ================================================
-        // EXIT CONDITIONS
-        // ================================================
+  void moveToPose(float tx, float ty, float targetThetaRad,
+                  uint32_t timeout = 5000);
 
-        float position_tolerance = 0.5f;
-        float theta_tolerance = 0.03f;
+  void cancel();
 
-        // ================================================
-        // TIMING
-        // ================================================
+  bool isRunning();
 
-        uint32_t timeout = 5000;
-
-        // ================================================
-        // DEBUGGING
-        // ================================================
-
-        bool log = false;
-    };
-
-    // ========================================================
-    // CONSTRUCTOR
-    // ========================================================
-
-    HolonomicLQR(
-        Chassis* chassis_ptr,
-        float dtSeconds = 0.01f
-    );
-
-    // ========================================================
-    // PATH FOLLOWING
-    // ========================================================
-
-    void followPath(
-        const Path& path
-    );
-
-    // ========================================================
-    // POINT-TO-POINT
-    // ========================================================
-
-    void moveToPose(
-        float tx,
-        float ty,
-        float targetThetaRad,
-        uint32_t timeout = 5000
-    );
-
-    // ========================================================
-    // TASK CONTROL
-    // ========================================================
-
-    void cancel();
-
-    bool isRunning();
-
-    void waitUntilDone();
+  void waitUntilDone();
 
 private:
+  Chassis *chassis;
 
-    // ========================================================
-    // INTERNALS
-    // ========================================================
+  float dt;
 
-    Chassis* chassis;
+  Eigen::Matrix3f K;
 
-    float dt;
+  std::atomic<bool> isRunningFlag{false};
 
-    Eigen::Matrix3f K;
+  std::atomic<bool> cancelFlag{false};
 
-    std::atomic<bool> isRunningFlag {false};
+  void computeLQRGain();
 
-    std::atomic<bool> cancelFlag {false};
+  Eigen::Matrix3f dareSolver(const Eigen::Matrix3f &A, const Eigen::Matrix3f &B,
+                             const Eigen::Matrix3f &Q,
+                             const Eigen::Matrix3f &R);
 
-    // ========================================================
-    // LQR
-    // ========================================================
+  static std::vector<State> prepareTrajectory(const Path &path);
 
-    void computeLQRGain();
+  static float angleError(float current, float target);
 
-    Eigen::Matrix3f dareSolver(
-        const Eigen::Matrix3f& A,
-        const Eigen::Matrix3f& B,
-        const Eigen::Matrix3f& Q,
-        const Eigen::Matrix3f& R
-    );
-
-    // ========================================================
-    // TRAJECTORY
-    // ========================================================
-
-    static std::vector<State> prepareTrajectory(
-        const Path& path
-    );
-
-    // ========================================================
-    // HELPERS
-    // ========================================================
-
-    static float angleError(
-        float current,
-        float target
-    );
-
-    static float clamp(
-        float value,
-        float min,
-        float max
-    );
+  static float clamp(float value, float min, float max);
 };

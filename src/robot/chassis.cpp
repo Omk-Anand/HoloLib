@@ -1,355 +1,305 @@
 #include "chassis.h"
 
-#include <sstream>
+#include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <iostream>
-#include <cmath>
-#include <algorithm>
 #include <limits>
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Constants
-// ─────────────────────────────────────────────────────────────────────────────
+#include <sstream>
 
 static constexpr float METER_TO_INCH = 39.3700787f;
-static constexpr float DEG2RAD       = M_PI / 180.0f;
-static constexpr float RAD2DEG       = 180.0f / M_PI;
+static constexpr float DEG2RAD = M_PI / 180.0f;
+static constexpr float RAD2DEG = 180.0f / M_PI;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Path Parser
-// ─────────────────────────────────────────────────────────────────────────────
+std::vector<PathPoint> parsePathData(const std::string &input_source,
+                                     bool convertFromMeters) {
+  std::vector<PathPoint> path;
+  const float scale = convertFromMeters ? METER_TO_INCH : 1.0f;
 
-std::vector<PathPoint> parsePathData(const std::string& input_source,
-                                     bool               convertFromMeters) {
-    std::vector<PathPoint> path;
-    const float scale = convertFromMeters ? METER_TO_INCH : 1.0f;
+  bool is_file = (input_source.find('\n') == std::string::npos) &&
+                 (input_source.find('/') != std::string::npos ||
+                  input_source.find('.') != std::string::npos);
 
-    // Decide: file path (no newline, has slash or dot) vs inline CSV string
-    bool is_file = (input_source.find('\n') == std::string::npos) &&
-                   (input_source.find('/') != std::string::npos ||
-                    input_source.find('.') != std::string::npos);
+  auto processLine = [&](const std::string &raw) {
+    std::string line = raw;
+    while (!line.empty() && (line.back() == '\r' || line.back() == '\n' ||
+                             line.back() == ' ' || line.back() == '\t'))
+      line.pop_back();
 
-    auto processLine = [&](const std::string& raw) {
-        // Strip whitespace / carriage returns
-        std::string line = raw;
-        while (!line.empty() &&
-               (line.back() == '\r' || line.back() == '\n' || line.back() == ' ' || line.back() == '\t'))
-            line.pop_back();
-        // Also strip leading whitespace
-        size_t start = line.find_first_not_of(" \t");
-        if (start == std::string::npos) return; // blank line
-        line = line.substr(start);
-        if (line.empty()) return;
+    size_t start = line.find_first_not_of(" \t");
+    if (start == std::string::npos)
+      return;
+    line = line.substr(start);
+    if (line.empty())
+      return;
 
-        std::stringstream ss(line);
-        std::string cx, cy, ct;
-        if (std::getline(ss, cx, ',') &&
-            std::getline(ss, cy, ',') &&
-            std::getline(ss, ct, ',')) {
-            try {
-                PathPoint pt;
-                pt.x     = std::stof(cx) * scale;
-                pt.y     = std::stof(cy) * scale;
-                pt.theta = std::stof(ct);         // always degrees
-                path.push_back(pt);
-            } catch (...) {
-                // Skip header rows / malformed lines silently
-            }
-        }
-    };
-
-    if (is_file) {
-        std::ifstream file(input_source);
-        if (!file.is_open()) {
-            std::cout << "[PARSER ERROR] Cannot open: " << input_source << std::endl;
-            return path;
-        }
-        std::string line;
-        while (std::getline(file, line)) processLine(line);
-    } else {
-        std::stringstream ss(input_source);
-        std::string line;
-        while (std::getline(ss, line)) processLine(line);
+    std::stringstream ss(line);
+    std::string cx, cy, ct;
+    if (std::getline(ss, cx, ',') && std::getline(ss, cy, ',') &&
+        std::getline(ss, ct, ',')) {
+      try {
+        PathPoint pt;
+        pt.x = std::stof(cx) * scale;
+        pt.y = std::stof(cy) * scale;
+        pt.theta = std::stof(ct);
+        path.push_back(pt);
+      } catch (...) {
+      }
     }
+  };
 
-    std::cout << "[PARSER] Loaded " << path.size() << " points." << std::endl;
-    return path;
+  if (is_file) {
+    std::ifstream file(input_source);
+    if (!file.is_open()) {
+      std::cout << "[PARSER ERROR] Cannot open: " << input_source << std::endl;
+      return path;
+    }
+    std::string line;
+    while (std::getline(file, line))
+      processLine(line);
+  } else {
+    std::stringstream ss(input_source);
+    std::string line;
+    while (std::getline(ss, line))
+      processLine(line);
+  }
+
+  std::cout << "[PARSER] Loaded " << path.size() << " points." << std::endl;
+  return path;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// GainScheduler
-// ─────────────────────────────────────────────────────────────────────────────
-
 void GainScheduler::addStep(float threshold, float kP, float kI, float kD) {
-    schedules.push_back({threshold, {kP, kI, kD, 0.0f}});
-    std::sort(schedules.begin(), schedules.end(),
-              [](const ScheduledGain& a, const ScheduledGain& b) {
-                  return a.threshold < b.threshold;
-              });
+  schedules.push_back({threshold, {kP, kI, kD, 0.0f}});
+  std::sort(schedules.begin(), schedules.end(),
+            [](const ScheduledGain &a, const ScheduledGain &b) {
+              return a.threshold < b.threshold;
+            });
 }
 
 PIDGains GainScheduler::getGains(float error) const {
-    if (schedules.empty()) return {0, 0, 0, 0};
+  if (schedules.empty())
+    return {0, 0, 0, 0};
 
-    float absErr = std::abs(error);
+  float absErr = std::abs(error);
 
-    // Below or at lowest threshold → use lowest
-    if (absErr <= schedules.front().threshold)
-        return schedules.front().gains;
+  if (absErr <= schedules.front().threshold)
+    return schedules.front().gains;
 
-    // Above or at highest threshold → use highest
-    if (absErr >= schedules.back().threshold)
-        return schedules.back().gains;
-
-    // Interpolate between the two surrounding breakpoints
-    for (size_t i = 0; i < schedules.size() - 1; ++i) {
-        const auto& lo = schedules[i];
-        const auto& hi = schedules[i + 1];
-        if (absErr >= lo.threshold && absErr <= hi.threshold) {
-            float t  = (absErr - lo.threshold) / (hi.threshold - lo.threshold);
-            return {
-                lo.gains.kP + t * (hi.gains.kP - lo.gains.kP),
-                lo.gains.kI + t * (hi.gains.kI - lo.gains.kI),
-                lo.gains.kD + t * (hi.gains.kD - lo.gains.kD),
-                0.0f
-            };
-        }
-    }
-
+  if (absErr >= schedules.back().threshold)
     return schedules.back().gains;
+
+  for (size_t i = 0; i < schedules.size() - 1; ++i) {
+    const auto &lo = schedules[i];
+    const auto &hi = schedules[i + 1];
+    if (absErr >= lo.threshold && absErr <= hi.threshold) {
+      float t = (absErr - lo.threshold) / (hi.threshold - lo.threshold);
+      return {lo.gains.kP + t * (hi.gains.kP - lo.gains.kP),
+              lo.gains.kI + t * (hi.gains.kI - lo.gains.kI),
+              lo.gains.kD + t * (hi.gains.kD - lo.gains.kD), 0.0f};
+    }
+  }
+
+  return schedules.back().gains;
 }
 
-void GainScheduler::clear() {
-    schedules.clear();
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// EncoderKalmanFilter
-// ─────────────────────────────────────────────────────────────────────────────
+void GainScheduler::clear() { schedules.clear(); }
 
 EncoderKalmanFilter::EncoderKalmanFilter(float process_noise,
                                          float measurement_noise) {
-    x.setZero();
-    P.setIdentity();
-    Q << process_noise, 0, 0, process_noise;
-    R = measurement_noise;
-    H << 1, 0;
+  x.setZero();
+  P.setIdentity();
+  Q << process_noise, 0, 0, process_noise;
+  R = measurement_noise;
+  H << 1, 0;
 }
 
 float EncoderKalmanFilter::update(float measured_position, float dt) {
-    Eigen::Matrix2f F;
-    F << 1, dt, 0, 1;
-    x = F * x;
-    P = F * P * F.transpose() + Q;
+  Eigen::Matrix2f F;
+  F << 1, dt, 0, 1;
+  x = F * x;
+  P = F * P * F.transpose() + Q;
 
-    float           y = measured_position - H * x;
-    float           S = (H * P * H.transpose())(0, 0) + R;
-    Eigen::Vector2f K = P * H.transpose() / S;
+  float y = measured_position - H * x;
+  float S = (H * P * H.transpose())(0, 0) + R;
+  Eigen::Vector2f K = P * H.transpose() / S;
 
-    x = x + K * y;
-    P = (Eigen::Matrix2f::Identity() - K * H) * P;
-    return x(0);
+  x = x + K * y;
+  P = (Eigen::Matrix2f::Identity() - K * H) * P;
+  return x(0);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Odometry task trampoline
-// ─────────────────────────────────────────────────────────────────────────────
-
-void odomTaskTrampoline(void* param) {
-    static_cast<Chassis*>(param)->odometryTask();
+void odomTaskTrampoline(void *param) {
+  static_cast<Chassis *>(param)->odometryTask();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Chassis — Construction
-// ─────────────────────────────────────────────────────────────────────────────
-
-Chassis::Chassis(pros::Motor fl, pros::Motor fr,
-                 pros::Motor bl, pros::Motor br,
+Chassis::Chassis(pros::Motor fl, pros::Motor fr, pros::Motor bl, pros::Motor br,
                  pros::Imu imu_sensor, ChassisConfig cfg)
     : frontLeft(fl), frontRight(fr), backLeft(bl), backRight(br),
-      imu(imu_sensor), config(cfg)
-{
-    auto safePos = [](pros::Motor& m) {
-        float v = m.get_position();
-        return (std::isinf(v) || std::isnan(v)) ? 0.0f : v;
-    };
-    prev_fl = safePos(frontLeft);
-    prev_fr = safePos(frontRight);
-    prev_bl = safePos(backLeft);
-    prev_br = safePos(backRight);
+      imu(imu_sensor), config(cfg) {
+  auto safePos = [](pros::Motor &m) {
+    float v = m.get_position();
+    return (std::isinf(v) || std::isnan(v)) ? 0.0f : v;
+  };
+  prev_fl = safePos(frontLeft);
+  prev_fr = safePos(frontRight);
+  prev_bl = safePos(backLeft);
+  prev_br = safePos(backRight);
 
-    float h = imu.get_rotation();
-    prev_heading = (std::isinf(h) || std::isnan(h)) ? 0.0f : h * DEG2RAD;
+  float h = imu.get_rotation();
+  prev_heading = (std::isinf(h) || std::isnan(h)) ? 0.0f : h * DEG2RAD;
 
-    pros::Task odom_task(odomTaskTrampoline, this, "Odometry Task");
+  pros::Task odom_task(odomTaskTrampoline, this, "Odometry Task");
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Odometry Task
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Assuming you have added `PoseEKF ekf;` as a member of your Chassis class
-// initialized in the constructor like: ekf(0, 0, prev_heading)
 
 void Chassis::odometryTask() {
-    uint32_t now = pros::millis();
-    const float dt = 0.01f; // 10 ms loop
+  uint32_t now = pros::millis();
+  const float dt = 0.01f;
 
-    // Degrees of wheel rotation → inches of travel
-    const float d_per_deg = (M_PI * config.wheelDiameter * config.gearRatio) / 360.0f;
+  const float d_per_deg =
+      (M_PI * config.wheelDiameter * config.gearRatio) / 360.0f;
 
-    // X-drive inverse kinematics matrix (local Vx, Vy from 4 wheels)
-    Eigen::Matrix<float, 2, 4> kinematics;
-    kinematics <<  1, -1, -1,  1,
-                   1,  1,  1,  1;
-    kinematics *= (std::sqrt(2.0f) / 4.0f);
+  Eigen::Matrix<float, 2, 4> kinematics;
+  kinematics << 1, -1, -1, 1, 1, 1, 1, 1;
+  kinematics *= (std::sqrt(2.0f) / 4.0f);
 
-    auto safeEnc = [](pros::Motor& m, float prev) {
-        float v = m.get_position();
-        return (std::isinf(v) || std::isnan(v)) ? prev : v;
-    };
+  auto safeEnc = [](pros::Motor &m, float prev) {
+    float v = m.get_position();
+    return (std::isinf(v) || std::isnan(v)) ? prev : v;
+  };
 
-    while (true) {
-        // 1. Get raw measurements
-        float raw_fl = safeEnc(frontLeft,  prev_fl);
-        float raw_fr = safeEnc(frontRight, prev_fr);
-        float raw_bl = safeEnc(backLeft,   prev_bl);
-        float raw_br = safeEnc(backRight,  prev_br);
+  while (true) {
 
-        float raw_h = imu.get_rotation();
-        float current_heading_meas = (std::isinf(raw_h) || std::isnan(raw_h)) 
-                                     ? prev_heading 
+    float raw_fl = safeEnc(frontLeft, prev_fl);
+    float raw_fr = safeEnc(frontRight, prev_fr);
+    float raw_bl = safeEnc(backLeft, prev_bl);
+    float raw_br = safeEnc(backRight, prev_br);
+
+    float raw_h = imu.get_rotation();
+    float current_heading_meas = (std::isinf(raw_h) || std::isnan(raw_h))
+                                     ? prev_heading
                                      : raw_h * DEG2RAD;
 
-        // 2. Calculate deltas
-        Eigen::Vector4f wheel_deltas(
-            (raw_fl - prev_fl) * d_per_deg,
-            (raw_fr - prev_fr) * d_per_deg,
-            (raw_bl - prev_bl) * d_per_deg,
-            (raw_br - prev_br) * d_per_deg
-        );
+    Eigen::Vector4f wheel_deltas(
+        (raw_fl - prev_fl) * d_per_deg, (raw_fr - prev_fr) * d_per_deg,
+        (raw_bl - prev_bl) * d_per_deg, (raw_br - prev_br) * d_per_deg);
 
-        float d_theta_meas = std::remainder(current_heading_meas - prev_heading, 2.0f * M_PI);
-        if (std::isnan(d_theta_meas)) d_theta_meas = 0.0f;
+    float d_theta_meas =
+        std::remainder(current_heading_meas - prev_heading, 2.0f * M_PI);
+    if (std::isnan(d_theta_meas))
+      d_theta_meas = 0.0f;
 
-        // 3. Forward Kinematics (Local dx, dy)
-        Eigen::Vector2f local_delta = kinematics * wheel_deltas;
+    Eigen::Vector2f local_delta = kinematics * wheel_deltas;
 
-        // 4. EKF Prediction (Pose Exponentiation)
-        poseMutex.take();
-        
-        ekf.predict(local_delta.x(), local_delta.y(), d_theta_meas);
-        
-        // 5. EKF Update (Absolute IMU Correction)
-        ekf.updateIMU(current_heading_meas);
+    poseMutex.take();
 
-        // Sync EKF output to your existing currentPose struct
-        currentPose.x = ekf.getX();
-        currentPose.y = ekf.getY();
-        currentPose.theta = ekf.getTheta();
-        
-        poseMutex.give();
+    ekf.predict(local_delta.x(), local_delta.y(), d_theta_meas);
 
-        // 6. Update previous states for the next loop
-        prev_fl = raw_fl; 
-        prev_fr = raw_fr; 
-        prev_bl = raw_bl; 
-        prev_br = raw_br;
-        prev_heading = current_heading_meas;
+    ekf.updateIMU(current_heading_meas);
 
-        pros::Task::delay_until(&now, 10);
-    }
+    currentPose.x = ekf.getX();
+    currentPose.y = ekf.getY();
+    currentPose.theta = ekf.getTheta();
+
+    poseMutex.give();
+
+    prev_fl = raw_fl;
+    prev_fr = raw_fr;
+    prev_bl = raw_bl;
+    prev_br = raw_br;
+    prev_heading = current_heading_meas;
+
+    pros::Task::delay_until(&now, 10);
+  }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Low-level Drive Helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
 XDriveVoltages Chassis::calculateHolonomic(float vx, float vy, float vt) {
-    // Inputs [-127, 127]; outputs millivolts
-    constexpr float scale = 12000.0f / 127.0f;
 
-    XDriveVoltages v;
-    v.fl = (vy + vx + vt) * scale;
-    v.fr = (vy - vx - vt) * scale;
-    v.bl = (vy - vx + vt) * scale;
-    v.br = (vy + vx - vt) * scale;
+  constexpr float scale = 12000.0f / 127.0f;
 
-    float maxV = std::max({std::abs(v.fl), std::abs(v.fr),
-                           std::abs(v.bl), std::abs(v.br), 12000.0f});
-    if (maxV > 12000.0f) {
-        float r = 12000.0f / maxV;
-        v.fl *= r; v.fr *= r; v.bl *= r; v.br *= r;
-    }
-    return v;
+  XDriveVoltages v;
+  v.fl = (vy + vx + vt) * scale;
+  v.fr = (vy - vx - vt) * scale;
+  v.bl = (vy - vx + vt) * scale;
+  v.br = (vy + vx - vt) * scale;
+
+  float maxV = std::max({std::abs(v.fl), std::abs(v.fr), std::abs(v.bl),
+                         std::abs(v.br), 12000.0f});
+  if (maxV > 12000.0f) {
+    float r = 12000.0f / maxV;
+    v.fl *= r;
+    v.fr *= r;
+    v.bl *= r;
+    v.br *= r;
+  }
+  return v;
 }
 
 void Chassis::setMotorVoltages(XDriveVoltages v) {
-    frontLeft .move_voltage((int32_t)v.fl);
-    frontRight.move_voltage((int32_t)v.fr);
-    backLeft  .move_voltage((int32_t)v.bl);
-    backRight .move_voltage((int32_t)v.br);
+  frontLeft.move_voltage((int32_t)v.fl);
+  frontRight.move_voltage((int32_t)v.fr);
+  backLeft.move_voltage((int32_t)v.bl);
+  backRight.move_voltage((int32_t)v.br);
 }
 
 void Chassis::brake() {
-    frontLeft.brake(); frontRight.brake();
-    backLeft.brake();  backRight.brake();
+  frontLeft.brake();
+  frontRight.brake();
+  backLeft.brake();
+  backRight.brake();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Pose
-// ─────────────────────────────────────────────────────────────────────────────
-
 void Chassis::setPose(float x, float y, float theta) {
-    poseMutex.take();
-    float theta_rad = theta * DEG2RAD;
-    
-    // Update the struct
-    currentPose = {x, y, theta_rad};
-    prev_heading = theta_rad;
-    
-    // Reset the EKF state internally
-    ekf.setPose(x, y, theta_rad);
-    
-    poseMutex.give();
+  poseMutex.take();
+  float theta_rad = theta * DEG2RAD;
+
+  currentPose = {x, y, theta_rad};
+  prev_heading = theta_rad;
+
+  ekf.setPose(x, y, theta_rad);
+
+  poseMutex.give();
 }
 
 Pose Chassis::getPose(bool radians) {
-    poseMutex.take();
-    Pose p = currentPose;
-    poseMutex.give();
-    if (!radians) p.theta *= RAD2DEG;
-    return p;
+  poseMutex.take();
+  Pose p = currentPose;
+  poseMutex.give();
+  if (!radians)
+    p.theta *= RAD2DEG;
+  return p;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Gain Configuration
-// ─────────────────────────────────────────────────────────────────────────────
-
 void Chassis::setXGains(std::vector<ScheduledGain> steps) {
-    xSched.clear();
-    for (auto& s : steps)
-        xSched.addStep(s.threshold, s.gains.kP, s.gains.kI, s.gains.kD);
+  xSched.clear();
+  for (auto &s : steps)
+    xSched.addStep(s.threshold, s.gains.kP, s.gains.kI, s.gains.kD);
 }
 
 void Chassis::setYGains(std::vector<ScheduledGain> steps) {
-    ySched.clear();
-    for (auto& s : steps)
-        ySched.addStep(s.threshold, s.gains.kP, s.gains.kI, s.gains.kD);
+  ySched.clear();
+  for (auto &s : steps)
+    ySched.addStep(s.threshold, s.gains.kP, s.gains.kI, s.gains.kD);
 }
 
 void Chassis::setThetaGains(std::vector<ScheduledGain> steps) {
-    thetaSched.clear();
-    for (auto& s : steps)
-        thetaSched.addStep(s.threshold, s.gains.kP, s.gains.kI, s.gains.kD);
+  thetaSched.clear();
+  for (auto &s : steps)
+    thetaSched.addStep(s.threshold, s.gains.kP, s.gains.kI, s.gains.kD);
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Operator Control
-// ─────────────────────────────────────────────────────────────────────────────
 
 void Chassis::driveControl(float forward, float sideways, float rotation,
                            DriveCurves drivecurves) {
+    
+    static bool headingInitialized = false;
+    static float targetHeading = 0.0f;
+    static PID headingPID(1.0f, 0.0f, 0.0f, 0.0f); 
+    static uint32_t lastRotationTime = 0;
+
+    if (!headingInitialized) {
+        targetHeading = getPose(false).theta;
+        headingInitialized = true;
+    }
+
     auto applyCurve = [](float x, const DriveCurve& c) -> float {
         if (std::abs(x) < c.deadzone) return 0.0f;
         float sign = (x >= 0) ? 1.0f : -1.0f;
@@ -362,372 +312,232 @@ void Chassis::driveControl(float forward, float sideways, float rotation,
 
     forward  = applyCurve(forward,  drivecurves.movement);
     sideways = applyCurve(sideways, drivecurves.movement);
-    rotation = applyCurve(rotation, drivecurves.rotation);
+
+    if (std::abs(rotation) >= 5.0f) {
+        rotation = applyCurve(rotation, drivecurves.rotation);
+        targetHeading = getPose(false).theta; 
+        lastRotationTime = pros::millis();
+    } else {
+        if (pros::millis() - lastRotationTime < 500) {
+            rotation = 0.0f;
+            targetHeading = getPose(false).theta;
+        } else {
+            float currentHeading = getPose(false).theta;
+            float angleError = getAngleError(targetHeading, currentHeading);
+            rotation = (float)headingPID.update(angleError);
+            rotation = std::clamp(rotation, -127.0f, 127.0f);
+        }
+    }
 
     setMotorVoltages(calculateHolonomic(sideways, forward, rotation));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// followPathPID
-// ─────────────────────────────────────────────────────────────────────────────
-enum class HeadingMode {
-    FollowPath,
-    HoldAngle
-};
+enum class HeadingMode { FollowPath, HoldAngle };
 
-void Chassis::followPathPID(
-    const std::vector<PathPoint>& path,
-    float                         lookaheadDistance,
-    MoveParams                    params,
-    HeadingMode                   headingMode,
-    float                         holdAngleDeg,
-    bool                          reversed
-) {
-    if (path.size() < 2) {
-        std::cout << "[followPathPID] Invalid path." << std::endl;
-        return;
-    }
+void Chassis::followPathPID(const std::vector<PathPoint> &path,
+                            float lookaheadDistance, MoveParams params,
+                            HeadingMode headingMode, float holdAngleDeg,
+                            bool reversed) {
+  if (path.size() < 2) {
+    std::cout << "[followPathPID] Invalid path." << std::endl;
+    return;
+  }
 
-    motion.enqueue([=, this]() {
-
+  motion.enqueue(
+      [=, this]() {
         PID forwardPID(0, 0, 0, 0);
-        PID strafePID (0, 0, 0, 0);
-        PID thetaPID  (0, 0, 0, 0);
+        PID strafePID(0, 0, 0, 0);
+        PID thetaPID(0, 0, 0, 0);
 
         uint32_t start = pros::millis();
+
+        uint32_t settleStart = 0;
+        constexpr uint32_t settleTime = 120;
 
         int closestSegment = 0;
         float closestT = 0.0f;
 
         while (pros::millis() - start < params.timeout) {
 
-            // ============================================================
-            // CURRENT POSE
-            // ============================================================
+          Pose curr = getPose(false);
 
-            Pose curr = getPose(false);
+          float headingRad = curr.theta * DEG2RAD;
 
-            // ============================================================
-            // ROBOT BASIS VECTORS
-            //
-            // YOUR ODOM:
-            // +X = right
-            // +Y = forward
-            // theta = clockwise-positive
-            //
-            // We derive basis vectors directly instead of using
-            // standard rotation matrices.
-            // ============================================================
+          float forwardX = std::sin(headingRad);
+          float forwardY = std::cos(headingRad);
 
-            float headingRad = curr.theta * DEG2RAD;
+          float strafeX = std::cos(headingRad);
+          float strafeY = -std::sin(headingRad);
 
-            float forwardX = std::sin(headingRad);
-            float forwardY = std::cos(headingRad);
+          float bestDist = std::numeric_limits<float>::max();
+          PathPoint closestPoint = path.front();
 
-            float strafeX = std::cos(headingRad);
-            float strafeY = -std::sin(headingRad);
+          for (int i = closestSegment; i < (int)path.size() - 1; ++i) {
 
-            // ============================================================
-            // FIND CLOSEST POINT ON PATH
-            // ============================================================
+            const PathPoint &a = path[i];
+            const PathPoint &b = path[i + 1];
 
-            float bestDist = std::numeric_limits<float>::max();
+            float abx = b.x - a.x;
+            float aby = b.y - a.y;
 
-            PathPoint closestPoint = path.front();
+            float apx = curr.x - a.x;
+            float apy = curr.y - a.y;
 
-            for (int i = closestSegment;
-                 i < (int)path.size() - 1;
-                 ++i) {
+            float ab2 = abx * abx + aby * aby;
 
-                const PathPoint& a = path[i];
-                const PathPoint& b = path[i + 1];
+            if (ab2 < 1e-6f)
+              continue;
 
-                float abx = b.x - a.x;
-                float aby = b.y - a.y;
+            float t = (apx * abx + apy * aby) / ab2;
+            t = std::clamp(t, 0.0f, 1.0f);
 
-                float apx = curr.x - a.x;
-                float apy = curr.y - a.y;
+            float projX = a.x + abx * t;
+            float projY = a.y + aby * t;
 
-                float ab2 = abx * abx + aby * aby;
+            float dist = std::hypot(projX - curr.x, projY - curr.y);
 
-                if (ab2 < 1e-6f)
-                    continue;
+            if (dist < bestDist) {
+              bestDist = dist;
+              closestPoint.x = projX;
+              closestPoint.y = projY;
+              closestPoint.theta = a.theta + (b.theta - a.theta) * t;
+              closestSegment = i;
+              closestT = t;
+            }
+          }
 
-                float t =
-                    (apx * abx + apy * aby) / ab2;
+          PathPoint lookahead = closestPoint;
+          float remaining = lookaheadDistance;
+          int seg = closestSegment;
 
-                t = std::clamp(t, 0.0f, 1.0f);
+          while (seg < (int)path.size() - 1) {
 
-                float projX = a.x + abx * t;
-                float projY = a.y + aby * t;
+            const PathPoint &a = path[seg];
+            const PathPoint &b = path[seg + 1];
 
-                float dist =
-                    std::hypot(
-                        projX - curr.x,
-                        projY - curr.y
-                    );
+            float startX;
+            float startY;
 
-                if (dist < bestDist) {
-
-                    bestDist = dist;
-
-                    closestPoint.x = projX;
-                    closestPoint.y = projY;
-
-                    closestPoint.theta =
-                        a.theta +
-                        (b.theta - a.theta) * t;
-
-                    closestSegment = i;
-                    closestT = t;
-                }
+            if (seg == closestSegment) {
+              startX = closestPoint.x;
+              startY = closestPoint.y;
+            } else {
+              startX = a.x;
+              startY = a.y;
             }
 
-            // ============================================================
-            // ADVANCE LOOKAHEAD ALONG PATH
-            // ============================================================
+            float dx = b.x - startX;
+            float dy = b.y - startY;
 
-            PathPoint lookahead = closestPoint;
+            float segLen = std::hypot(dx, dy);
 
-            float remaining = lookaheadDistance;
-
-            int seg = closestSegment;
-
-            while (seg < (int)path.size() - 1) {
-
-                const PathPoint& a = path[seg];
-                const PathPoint& b = path[seg + 1];
-
-                float startX;
-                float startY;
-
-                if (seg == closestSegment) {
-                    startX = closestPoint.x;
-                    startY = closestPoint.y;
-                } else {
-                    startX = a.x;
-                    startY = a.y;
-                }
-
-                float dx = b.x - startX;
-                float dy = b.y - startY;
-
-                float segLen = std::hypot(dx, dy);
-
-                if (segLen >= remaining) {
-
-                    float ratio = remaining / segLen;
-
-                    lookahead.x =
-                        startX + dx * ratio;
-
-                    lookahead.y =
-                        startY + dy * ratio;
-
-                    lookahead.theta =
-                        a.theta +
-                        (b.theta - a.theta) * ratio;
-
-                    break;
-                }
-
-                remaining -= segLen;
-                seg++;
+            if (segLen >= remaining) {
+              float ratio = remaining / segLen;
+              lookahead.x = startX + dx * ratio;
+              lookahead.y = startY + dy * ratio;
+              lookahead.theta = a.theta + (b.theta - a.theta) * ratio;
+              break;
             }
 
-            // ============================================================
-            // CLAMP TO ENDPOINT
-            // ============================================================
+            remaining -= segLen;
+            seg++;
+          }
 
-            if (seg >= (int)path.size() - 1) {
-                lookahead = path.back();
-            }
+          if (seg >= (int)path.size() - 1) {
+            lookahead = path.back();
+          }
 
-            // ============================================================
-            // GLOBAL ERROR
-            // ============================================================
+          float globalDX = lookahead.x - curr.x;
+          float globalDY = lookahead.y - curr.y;
 
-            float globalDX =
-                lookahead.x - curr.x;
+          float localForward = globalDX * forwardX + globalDY * forwardY;
+          float localStrafe = globalDX * strafeX + globalDY * strafeY;
 
-            float globalDY =
-                lookahead.y - curr.y;
+          if (reversed) {
+            localForward *= -1.0f;
+            localStrafe *= -1.0f;
+          }
 
-            // ============================================================
-            // PROJECT GLOBAL ERROR INTO ROBOT FRAME
-            // ============================================================
+          float targetHeading;
 
-            float localForward =
-                globalDX * forwardX +
-                globalDY * forwardY;
+          switch (headingMode) {
+          case HeadingMode::FollowPath:
+            targetHeading = lookahead.theta;
+            break;
+          case HeadingMode::HoldAngle:
+            targetHeading = holdAngleDeg;
+            break;
+          default:
+            targetHeading = curr.theta;
+            break;
+          }
 
-            float localStrafe =
-                globalDX * strafeX +
-                globalDY * strafeY;
+          if (reversed)
+            targetHeading += 180.0f;
+          float angleError = getAngleError(targetHeading, curr.theta);
 
-            // ============================================================
-            // REVERSE MODE
-            // ============================================================
+          float distToEnd =
+              std::hypot(path.back().x - curr.x, path.back().y - curr.y);
 
-            if (reversed) {
-                localForward *= -1.0f;
-                localStrafe *= -1.0f;
-            }
+          if (params.earlyExitRange > 0.0f &&
+              distToEnd <= params.earlyExitRange) {
+            break;
+          }
 
-            // ============================================================
-            // TARGET HEADING
-            // ============================================================
+          bool settledPos = distToEnd < params.exitRange;
+          bool settledAngle = std::abs(angleError) < 2.0f;
 
-            float targetHeading;
+          if (settledPos && settledAngle) {
 
-            switch (headingMode) {
+            if (settleStart == 0)
+              settleStart = pros::millis();
+            if (pros::millis() - settleStart >= settleTime)
+              break;
+          } else {
+            settleStart = 0;
+          }
 
-                case HeadingMode::FollowPath:
-                    targetHeading = lookahead.theta;
-                    break;
+          forwardPID.setGains(ySched.getGains(localForward));
+          strafePID.setGains(xSched.getGains(localStrafe));
+          thetaPID.setGains(thetaSched.getGains(angleError));
 
-                case HeadingMode::HoldAngle:
-                    targetHeading = holdAngleDeg;
-                    break;
+          float forward = (float)forwardPID.update(localForward);
+          float strafe = (float)strafePID.update(localStrafe);
+          float turn = (float)thetaPID.update(angleError);
 
-                default:
-                    targetHeading = curr.theta;
-                    break;
-            }
+          float translationalMag = std::hypot(forward, strafe);
 
-            if (reversed)
-                targetHeading += 180.0f;
+          if (translationalMag > params.maxTranslationSpeed) {
+            float scale = params.maxTranslationSpeed / translationalMag;
+            forward *= scale;
+            strafe *= scale;
+          }
 
-            float angleError =
-                getAngleError(
-                    targetHeading,
-                    curr.theta
-                );
+          if (translationalMag > 1e-3f && translationalMag < params.minSpeed &&
+              distToEnd > params.exitRange) {
 
-            // ============================================================
-            // DISTANCE TO END
-            // ============================================================
+            float scale = params.minSpeed / translationalMag;
+            forward *= scale;
+            strafe *= scale;
+          }
 
-            float distToEnd =
-                std::hypot(
-                    path.back().x - curr.x,
-                    path.back().y - curr.y
-                );
+          turn = std::clamp(turn, -params.maxRotationSpeed,
+                            params.maxRotationSpeed);
 
-            // ============================================================
-            // EXIT CONDITIONS
-            // ============================================================
+          setMotorVoltages(calculateHolonomic(strafe, forward, turn));
 
-            if (params.earlyExitRange > 0.0f &&
-                distToEnd <= params.earlyExitRange) {
-                break;
-            }
-
-            bool settledPos =
-                distToEnd < params.exitRange;
-
-            bool settledAngle =
-                std::abs(angleError) < 2.0f;
-
-            if (settledPos && settledAngle)
-                break;
-
-            // ============================================================
-            // PID GAINS
-            // ============================================================
-
-            forwardPID.setGains(
-                ySched.getGains(localForward));
-
-            strafePID.setGains(
-                xSched.getGains(localStrafe));
-
-            thetaPID.setGains(
-                thetaSched.getGains(angleError));
-
-            // ============================================================
-            // PID OUTPUTS
-            // ============================================================
-
-            float forward =
-                (float)forwardPID.update(localForward);
-
-            float strafe =
-                (float)strafePID.update(localStrafe);
-
-            float turn =
-                (float)thetaPID.update(angleError);
-
-            // ============================================================
-            // TRANSLATIONAL LIMITING
-            // ============================================================
-
-            float translationalMag =
-                std::hypot(forward, strafe);
-
-            if (translationalMag > params.maxTranslationSpeed) {
-
-                float scale =
-                    params.maxTranslationSpeed /
-                    translationalMag;
-
-                forward *= scale;
-                strafe *= scale;
-            }
-
-            if (translationalMag > 1e-3f &&
-                translationalMag < params.minSpeed &&
-                distToEnd > params.exitRange) {
-
-                float scale =
-                    params.minSpeed /
-                    translationalMag;
-
-                forward *= scale;
-                strafe *= scale;
-            }
-
-            // ============================================================
-            // ROTATIONAL LIMITING
-            // ============================================================
-
-            turn = std::clamp(
-                turn,
-                -params.maxRotationSpeed,
-                 params.maxRotationSpeed
-            );
-
-            // ============================================================
-            // DRIVE
-            //
-            // calculateHolonomic(vx, vy, vt)
-            //
-            // vx = strafe
-            // vy = forward
-            // ============================================================
-
-            setMotorVoltages(
-                calculateHolonomic(
-                    strafe,
-                    forward,
-                    turn
-                )
-            );
-
-            pros::delay(10);
+          pros::delay(10);
         }
 
         brake();
-
-    }, params.async);
+      },
+      params.async);
 }
-// ─────────────────────────────────────────────────────────────────────────────
-// turnToHeading
-// ─────────────────────────────────────────────────────────────────────────────
 
 void Chassis::turnToHeading(float targetDeg, MoveParams params) {
-    motion.enqueue([=, this]() {
-        uint32_t start       = pros::millis();
+  motion.enqueue(
+      [=, this]() {
+        uint32_t start = pros::millis();
         uint32_t settleStart = 0;
         constexpr uint32_t settleTime = 100;
 
@@ -735,52 +545,51 @@ void Chassis::turnToHeading(float targetDeg, MoveParams params) {
         float prevError = 0.0f;
 
         while (pros::millis() - start < params.timeout) {
-            float error = getAngleError(targetDeg, getPose(false).theta);
+          float error = getAngleError(targetDeg, getPose(false).theta);
 
-            if (params.earlyExitRange > 0.0f && std::abs(error) <= params.earlyExitRange)
-                return;
+          if (params.earlyExitRange > 0.0f &&
+              std::abs(error) <= params.earlyExitRange)
+            return;
 
-            if (std::abs(error) < params.exitRange) {
-                if (settleStart == 0) settleStart = pros::millis();
-                float vel = (error - prevError) / 0.01f;
-                if (pros::millis() - settleStart >= settleTime && std::abs(vel) < 0.5f) break;
-            } else {
-                settleStart = 0;
-            }
+          if (std::abs(error) < params.exitRange) {
+            if (settleStart == 0)
+              settleStart = pros::millis();
+            float vel = (error - prevError) / 0.01f;
+            if (pros::millis() - settleStart >= settleTime &&
+                std::abs(vel) < 0.5f)
+              break;
+          } else {
+            settleStart = 0;
+          }
 
-            tPID.setGains(thetaSched.getGains(error));
-            float output = (float)tPID.update(error);
+          tPID.setGains(thetaSched.getGains(error));
+          float output = (float)tPID.update(error);
 
-            if (std::abs(output) > 1e-3f && std::abs(output) < params.minSpeed)
-                output = std::copysign(params.minSpeed, output);
-            output = std::clamp(output, -params.maxRotationSpeed, params.maxRotationSpeed);
+          if (std::abs(output) > 1e-3f && std::abs(output) < params.minSpeed)
+            output = std::copysign(params.minSpeed, output);
+          output = std::clamp(output, -params.maxRotationSpeed,
+                              params.maxRotationSpeed);
 
-            setMotorVoltages(calculateHolonomic(0, 0, output));
-            prevError = error;
-            pros::delay(10);
+          setMotorVoltages(calculateHolonomic(0, 0, output));
+          prevError = error;
+          pros::delay(10);
         }
         brake();
-    }, params.async);
+      },
+      params.async);
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// turnToPoint
-// ─────────────────────────────────────────────────────────────────────────────
 
 void Chassis::turnToPoint(float tx, float ty, MoveParams params) {
-    Pose p = getPose(false);
-    float targetDeg = std::atan2(ty - p.y, tx - p.x) * RAD2DEG;
-    turnToHeading(targetDeg, params);
+  Pose p = getPose(false);
+  float targetDeg = std::atan2(ty - p.y, tx - p.x) * RAD2DEG;
+  turnToHeading(targetDeg, params);
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// moveToPoint
-// ─────────────────────────────────────────────────────────────────────────────
 
 void Chassis::moveToPoint(float tx, float ty, MoveParams params,
                           bool angleCorrection) {
-    motion.enqueue([=, this]() {
-        uint32_t start       = pros::millis();
+  motion.enqueue(
+      [=, this]() {
+        uint32_t start = pros::millis();
         uint32_t settleStart = 0;
         constexpr uint32_t settleTime = 100;
 
@@ -788,134 +597,143 @@ void Chassis::moveToPoint(float tx, float ty, MoveParams params,
         float holdHeading = getPose(false).theta;
 
         while (pros::millis() - start < params.timeout) {
-            Pose  curr     = getPose(false);
-            float ex       = tx - curr.x;
-            float ey       = ty - curr.y;
-            float distErr  = std::hypot(ex, ey);
+          Pose curr = getPose(false);
+          float ex = tx - curr.x;
+          float ey = ty - curr.y;
+          float distErr = std::hypot(ex, ey);
 
-            if (params.earlyExitRange > 0.0f && distErr <= params.earlyExitRange)
-                return;
+          if (params.earlyExitRange > 0.0f && distErr <= params.earlyExitRange)
+            return;
 
-            if (distErr < params.exitRange) {
-                if (settleStart == 0) settleStart = pros::millis();
-                if (pros::millis() - settleStart >= settleTime) break;
-            } else {
-                settleStart = 0;
-            }
+          if (distErr < params.exitRange) {
+            if (settleStart == 0)
+              settleStart = pros::millis();
+            if (pros::millis() - settleStart >= settleTime)
+              break;
+          } else {
+            settleStart = 0;
+          }
 
-            float angleError = getAngleError(holdHeading, curr.theta);
+          float angleError = getAngleError(holdHeading, curr.theta);
 
-            xPID.setGains(xSched    .getGains(ex));
-            yPID.setGains(ySched    .getGains(ey));
-            tPID.setGains(thetaSched.getGains(angleError));
+          xPID.setGains(xSched.getGains(ex));
+          yPID.setGains(ySched.getGains(ey));
+          tPID.setGains(thetaSched.getGains(angleError));
 
-            float outX_g = (float)xPID.update(ex);
-            float outY_g = (float)yPID.update(ey);
-            float outT   = angleCorrection ? (float)tPID.update(angleError) : 0.0f;
+          float outX_g = (float)xPID.update(ex);
+          float outY_g = (float)yPID.update(ey);
+          float outT = angleCorrection ? (float)tPID.update(angleError) : 0.0f;
 
-            float mag = std::hypot(outX_g, outY_g);
-            if (mag > 1e-3f && mag < params.minSpeed) {
-                float s = params.minSpeed / mag;
-                outX_g *= s; outY_g *= s;
-            }
-            if (mag > params.maxTranslationSpeed) {
-                float s = params.maxTranslationSpeed / mag;
-                outX_g *= s; outY_g *= s;
-            }
-            if (distErr < 2.0f) outT = 0.0f;
-            outT = std::clamp(outT, -params.maxRotationSpeed, params.maxRotationSpeed);
+          float mag = std::hypot(outX_g, outY_g);
+          if (mag > 1e-3f && mag < params.minSpeed) {
+            float s = params.minSpeed / mag;
+            outX_g *= s;
+            outY_g *= s;
+          }
+          if (mag > params.maxTranslationSpeed) {
+            float s = params.maxTranslationSpeed / mag;
+            outX_g *= s;
+            outY_g *= s;
+          }
+          if (distErr < 2.0f)
+            outT = 0.0f;
+          outT = std::clamp(outT, -params.maxRotationSpeed,
+                            params.maxRotationSpeed);
 
-            float rad  = curr.theta * DEG2RAD;
-            float cosH = std::cos(rad), sinH = std::sin(rad);
-            float outX_local =  outX_g * cosH + outY_g * sinH;
-            float outY_local = -outX_g * sinH + outY_g * cosH;
+          float rad = curr.theta * DEG2RAD;
+          float cosH = std::cos(rad), sinH = std::sin(rad);
 
-            setMotorVoltages(calculateHolonomic(outX_local, outY_local, outT));
-            pros::delay(10);
+          float outX_local = outX_g * cosH - outY_g * sinH;
+          float outY_local = outX_g * sinH + outY_g * cosH;
+
+          setMotorVoltages(calculateHolonomic(outX_local, outY_local, outT));
+          pros::delay(10);
         }
         brake();
-    }, params.async);
+      },
+      params.async);
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// moveToPose
-// ─────────────────────────────────────────────────────────────────────────────
 
 void Chassis::moveToPose(float tx, float ty, float targetThetaDeg,
                          MoveParams params) {
-    motion.enqueue([=, this]() {
-        uint32_t start       = pros::millis();
+  motion.enqueue(
+      [=, this]() {
+        uint32_t start = pros::millis();
         uint32_t settleStart = 0;
-        constexpr uint32_t settleTime    = 120;
-        constexpr float    angleExitDeg  = 2.0f;
+        constexpr uint32_t settleTime = 120;
+        constexpr float angleExitDeg = 2.0f;
 
-        PID xPID(0,0,0,0), yPID(0,0,0,0), tPID(0,0,0,0);
+        PID xPID(0, 0, 0, 0), yPID(0, 0, 0, 0), tPID(0, 0, 0, 0);
 
         while (pros::millis() - start < params.timeout) {
-            Pose  curr       = getPose(false);
-            float ex         = tx - curr.x;
-            float ey         = ty - curr.y;
-            float distErr    = std::hypot(ex, ey);
-            float angleError = getAngleError(targetThetaDeg, curr.theta);
+          Pose curr = getPose(false);
+          float ex = tx - curr.x;
+          float ey = ty - curr.y;
+          float distErr = std::hypot(ex, ey);
+          float angleError = getAngleError(targetThetaDeg, curr.theta);
 
-            if (params.earlyExitRange > 0.0f && distErr <= params.earlyExitRange)
-                return;
+          if (params.earlyExitRange > 0.0f && distErr <= params.earlyExitRange)
+            return;
 
-            bool posSettled   = distErr    < params.exitRange;
-            bool angleSettled = std::abs(angleError) < angleExitDeg;
-            if (posSettled && angleSettled) {
-                if (settleStart == 0) settleStart = pros::millis();
-                if (pros::millis() - settleStart >= settleTime) break;
-            } else {
-                settleStart = 0;
-            }
+          bool posSettled = distErr < params.exitRange;
+          bool angleSettled = std::abs(angleError) < angleExitDeg;
+          if (posSettled && angleSettled) {
+            if (settleStart == 0)
+              settleStart = pros::millis();
+            if (pros::millis() - settleStart >= settleTime)
+              break;
+          } else {
+            settleStart = 0;
+          }
 
-            xPID.setGains(xSched    .getGains(ex));
-            yPID.setGains(ySched    .getGains(ey));
-            tPID.setGains(thetaSched.getGains(angleError));
+          xPID.setGains(xSched.getGains(ex));
+          yPID.setGains(ySched.getGains(ey));
+          tPID.setGains(thetaSched.getGains(angleError));
 
-            float outX_g = (float)xPID.update(ex);
-            float outY_g = (float)yPID.update(ey);
-            float outT   = (float)tPID.update(angleError);
+          float outX_g = (float)xPID.update(ex);
+          float outY_g = (float)yPID.update(ey);
+          float outT = (float)tPID.update(angleError);
 
-            float mag = std::hypot(outX_g, outY_g);
-            if (!posSettled && mag > 1e-3f && mag < params.minSpeed) {
-                float s = params.minSpeed / mag;
-                outX_g *= s; outY_g *= s;
-            }
-            if (mag > params.maxTranslationSpeed) {
-                float s = params.maxTranslationSpeed / mag;
-                outX_g *= s; outY_g *= s;
-            }
-            outT = std::clamp(outT, -params.maxRotationSpeed, params.maxRotationSpeed);
+          float mag = std::hypot(outX_g, outY_g);
+          if (!posSettled && mag > 1e-3f && mag < params.minSpeed) {
+            float s = params.minSpeed / mag;
+            outX_g *= s;
+            outY_g *= s;
+          }
+          if (mag > params.maxTranslationSpeed) {
+            float s = params.maxTranslationSpeed / mag;
+            outX_g *= s;
+            outY_g *= s;
+          }
+          outT = std::clamp(outT, -params.maxRotationSpeed,
+                            params.maxRotationSpeed);
 
-            float rad  = curr.theta * DEG2RAD;
-            float cosH = std::cos(rad), sinH = std::sin(rad);
-            float outX_local =  outX_g * cosH + outY_g * sinH;
-            float outY_local = -outX_g * sinH + outY_g * cosH;
+          float rad = curr.theta * DEG2RAD;
+          float cosH = std::cos(rad), sinH = std::sin(rad);
 
-            setMotorVoltages(calculateHolonomic(outX_local, outY_local, outT));
-            pros::delay(10);
+          float outX_local = outX_g * cosH - outY_g * sinH;
+          float outY_local = outX_g * sinH + outY_g * cosH;
+
+          setMotorVoltages(calculateHolonomic(outX_local, outY_local, outT));
+          pros::delay(10);
         }
         brake();
-    }, params.async);
+      },
+      params.async);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// curveCircle
-// ─────────────────────────────────────────────────────────────────────────────
-
-void Chassis::curveCircle(float targetThetaDeg, float radius, MoveParams params) {
-    motion.enqueue([=, this]() {
-        uint32_t start       = pros::millis();
+void Chassis::curveCircle(float targetThetaDeg, float radius,
+                          MoveParams params) {
+  motion.enqueue(
+      [=, this]() {
+        uint32_t start = pros::millis();
         uint32_t settleStart = 0;
-        constexpr uint32_t settleTime   = 120;
-        constexpr float    angleExitDeg = 2.0f;
+        constexpr uint32_t settleTime = 120;
+        constexpr float angleExitDeg = 2.0f;
 
-        PID xPID(0,0,0,0), yPID(0,0,0,0), tPID(0,0,0,0);
+        PID xPID(0, 0, 0, 0), yPID(0, 0, 0, 0), tPID(0, 0, 0, 0);
 
-        // Compute circle centre from starting pose
-        Pose  sp  = getPose(false);
+        Pose sp = getPose(false);
         float initErr = getAngleError(targetThetaDeg, sp.theta);
         float dir = (initErr >= 0) ? 1.0f : -1.0f;
         float cosS = std::cos(sp.theta * DEG2RAD);
@@ -924,49 +742,54 @@ void Chassis::curveCircle(float targetThetaDeg, float radius, MoveParams params)
         float cy = sp.y - dir * radius * sinS;
 
         while (pros::millis() - start < params.timeout) {
-            Pose  curr       = getPose(false);
-            float angleError = getAngleError(targetThetaDeg, curr.theta);
+          Pose curr = getPose(false);
+          float angleError = getAngleError(targetThetaDeg, curr.theta);
 
-            if (params.earlyExitRange > 0.0f && std::abs(angleError) <= params.earlyExitRange)
-                return;
+          if (params.earlyExitRange > 0.0f &&
+              std::abs(angleError) <= params.earlyExitRange)
+            return;
 
-            bool angleSettled = std::abs(angleError) < angleExitDeg;
-            if (angleSettled) {
-                if (settleStart == 0) settleStart = pros::millis();
-                if (pros::millis() - settleStart >= settleTime) break;
-            } else {
-                settleStart = 0;
-            }
+          bool angleSettled = std::abs(angleError) < angleExitDeg;
+          if (angleSettled) {
+            if (settleStart == 0)
+              settleStart = pros::millis();
+            if (pros::millis() - settleStart >= settleTime)
+              break;
+          } else {
+            settleStart = 0;
+          }
 
-            // Local-frame errors
-            float distToCenter = std::hypot(cx - curr.x, cy - curr.y);
-            float radiusError  = radius - distToCenter;          // +ve = drifted inside
-            float localXErr    = -dir * radiusError;
-            float localYErr    =  angleError * dir * DEG2RAD * radius;
+          float distToCenter = std::hypot(cx - curr.x, cy - curr.y);
+          float radiusError = radius - distToCenter;
+          float localXErr = -dir * radiusError;
+          float localYErr = angleError * dir * DEG2RAD * radius;
 
-            xPID.setGains(xSched    .getGains(localXErr));
-            yPID.setGains(ySched    .getGains(localYErr));
-            tPID.setGains(thetaSched.getGains(angleError));
+          xPID.setGains(xSched.getGains(localXErr));
+          yPID.setGains(ySched.getGains(localYErr));
+          tPID.setGains(thetaSched.getGains(angleError));
 
-            float outX_local = (float)xPID.update(localXErr);
-            float outY_local = (float)yPID.update(localYErr);
-            float outT       = (float)tPID.update(angleError);
+          float outX_local = (float)xPID.update(localXErr);
+          float outY_local = (float)yPID.update(localYErr);
+          float outT = (float)tPID.update(angleError);
 
-            float mag = std::hypot(outX_local, outY_local);
-            if (!angleSettled && mag > 1e-3f && mag < params.minSpeed) {
-                float s = params.minSpeed / mag;
-                outX_local *= s; outY_local *= s;
-            }
-            if (mag > params.maxTranslationSpeed) {
-                float s = params.maxTranslationSpeed / mag;
-                outX_local *= s; outY_local *= s;
-            }
-            outT = std::clamp(outT, -params.maxRotationSpeed, params.maxRotationSpeed);
+          float mag = std::hypot(outX_local, outY_local);
+          if (!angleSettled && mag > 1e-3f && mag < params.minSpeed) {
+            float s = params.minSpeed / mag;
+            outX_local *= s;
+            outY_local *= s;
+          }
+          if (mag > params.maxTranslationSpeed) {
+            float s = params.maxTranslationSpeed / mag;
+            outX_local *= s;
+            outY_local *= s;
+          }
+          outT = std::clamp(outT, -params.maxRotationSpeed,
+                            params.maxRotationSpeed);
 
-            // Errors are already in local frame — no extra rotation needed
-            setMotorVoltages(calculateHolonomic(outX_local, outY_local, outT));
-            pros::delay(10);
+          setMotorVoltages(calculateHolonomic(outX_local, outY_local, outT));
+          pros::delay(10);
         }
         brake();
-    }, params.async);
+      },
+      params.async);
 }
