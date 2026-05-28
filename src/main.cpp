@@ -47,13 +47,16 @@ void initialize() {
       {90.0, {2.15, 0.015, 0.155}},
       {0.0, {3.0, 0.02, 0.2}},
   });
-
+  chassis.setVelocityCalculations(true);
   pros::Task screen_task([&]() {
     while (true) {
       Pose pose = chassis.getPose(false);
       pros::lcd::print(0, "X: %.3f", pose.x);
       pros::lcd::print(1, "Y: %.3f", pose.y);
       pros::lcd::print(2, "Theta: %.3f", pose.theta);
+      pros::lcd::print(3, "X Velocity: %.3f", pose.velocity.vx);
+      pros::lcd::print(4, "Y Velocity: %.3f", pose.velocity.vy);
+      pros::lcd::print(5, "Theta Velocity: %.3f", pose.velocity.w);
       pros::delay(50);
     }
   });
@@ -140,7 +143,7 @@ void simulation()
   0, 39, 0
 	)";
 
-  chassis.curveCircle(180, 12, {}, Chassis::CurveDirection::CW);
+  chassis.followPathPID(parsePathData(path), 7, {}, Chassis::HeadingMode::FollowPath, 0, false);
 }
 
 

@@ -262,7 +262,9 @@ public:
 
   void setVelocityCalculations(bool state);
 
-  
+  bool detectCollision();
+
+  void openLoop(float forward, float sideways, float rotation);
 
 private:
   pros::Motor frontLeft, frontRight, backLeft, backRight;

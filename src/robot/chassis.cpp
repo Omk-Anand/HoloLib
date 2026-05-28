@@ -17,6 +17,10 @@ void Chassis::calibrate()
   backRight.tare_position();
   frontLeft.tare_position();
   frontRight.tare_position();
+  motionDistTraveled = 0.0f;
+  prev_fl = 0, prev_fr = 0, prev_bl = 0, prev_br = 0;
+  prev_heading = 0;
+  targetHeadingDriveControl = 0;
   imu.reset(true);
   pros::c::controller_rumble(pros::E_CONTROLLER_MASTER, ".");
 }
@@ -1193,7 +1197,39 @@ void Chassis::setEKFGains(float xProcessNoise, float yProcessNoise, float thetaP
   ekf.setProcessNoise(xProcessNoise, yProcessNoise, thetaProcessNoise, measurementNoise);
 }
 
+//Untested
 void Chassis::setVelocityCalculations(bool state)
 {
   velocityCalculationsOn = state;
 }
+
+//Untested
+bool Chassis::detectCollision() {
+    const double TARGET_THRESHOLD = 50.0;     
+    const double VELOCITY_THRESHOLD = 5.0;    
+    const double EFFICIENCY_THRESHOLD = 20.0; 
+
+    auto is_colliding = [&](pros::Motor& motor) {
+        double target = std::abs(motor.get_target_velocity());
+        double actual = std::abs(motor.get_actual_velocity());
+        double eff = motor.get_efficiency();
+
+        bool commanded = target > TARGET_THRESHOLD;
+        bool struggling = (actual < VELOCITY_THRESHOLD) || (eff < EFFICIENCY_THRESHOLD);
+
+        return commanded && struggling;
+    };
+
+    return is_colliding(frontLeft) || 
+           is_colliding(frontRight) || 
+           is_colliding(backLeft) || 
+           is_colliding(backRight);
+}
+
+//Untested
+void Chassis::openLoop(float forward, float sideways, float rotation) {
+  setMotorVoltages(calculateHolonomic(forward, sideways, rotation));
+}
+
+
+
