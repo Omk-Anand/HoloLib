@@ -11,8 +11,193 @@ static constexpr float METER_TO_INCH = 39.3700787f;
 static constexpr float DEG2RAD = M_PI / 180.0f;
 static constexpr float RAD2DEG = 180.0f / M_PI;
 
+
+void ObstacleManager::setRobotDimensions(float width, float length) {
+  robot_width = width;
+  robot_length = length;
+}
+
+void ObstacleManager::addObstacle(float x, float y, float radius) {
+  obstacles.push_back({Eigen::Vector2f(x, y), radius});
+}
+
+void ObstacleManager::removeObstacle(size_t index) {
+  if (index < obstacles.size()) {
+    obstacles.erase(obstacles.begin() + index);
+  }
+}
+
+void ObstacleManager::clearObstacles() {
+  obstacles.clear();
+}
+
+const std::vector<Obstacle>& ObstacleManager::getObstacles() const {
+  return obstacles;
+}
+
+bool ObstacleManager::checkIntersection(const Eigen::Vector2f& start, const Eigen::Vector2f& end, 
+                                       float safety_margin, Obstacle& out_obstacle, 
+                                       Eigen::Vector2f& out_closest) const {
+  Eigen::Vector2f ab = end - start;
+  float ab_len_sq = ab.squaredNorm();
+  if (ab_len_sq < 1e-6f) {
+    for (const auto& obs : obstacles) {
+      float dist = (start - obs.position).norm();
+      if (dist < obs.radius + safety_margin) {
+        out_obstacle = obs;
+        out_closest = start;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  for (const auto& obs : obstacles) {
+    Eigen::Vector2f ac = obs.position - start;
+    float t = ac.dot(ab) / ab_len_sq;
+    t = std::clamp(t, 0.0f, 1.0f);
+
+    Eigen::Vector2f closest = start + t * ab;
+    float dist = (closest - obs.position).norm();
+
+    if (dist < obs.radius + safety_margin) {
+      out_obstacle = obs;
+      out_closest = closest;
+      return true;
+    }
+  }
+  return false;
+}
+
+Eigen::Vector2f ObstacleManager::getAvoidanceTarget(const Eigen::Vector2f& robot_pos, 
+                                                   const Eigen::Vector2f& target_pos, 
+                                                   float safety_margin, 
+                                                   float clearance, 
+                                                   float robot_heading_rad,
+                                                   int recursion_depth) const {
+  if (recursion_depth > 3) {
+    return target_pos;
+  }
+
+  Obstacle obs;
+  Eigen::Vector2f closest;
+  if (checkIntersection(robot_pos, target_pos, safety_margin, obs, closest)) {
+    Eigen::Vector2f to_obs = obs.position - robot_pos;
+    Eigen::Vector2f perp(-to_obs.y(), to_obs.x());
+    if (perp.squaredNorm() < 1e-6f) {
+      return target_pos;
+    }
+    perp.normalize();
+    float abs_obs_angle = std::atan2(to_obs.x(), to_obs.y());
+    float alpha = abs_obs_angle - robot_heading_rad;
+    float r_width = (robot_width / 2.0f) / (std::abs(std::sin(alpha)) + 1e-6f);
+    float r_length = (robot_length / 2.0f) / (std::abs(std::cos(alpha)) + 1e-6f);
+    float dynamic_clearance = std::min(r_width, r_length) + clearance;
+
+    Eigen::Vector2f w1 = obs.position + perp * (obs.radius + dynamic_clearance);
+    Eigen::Vector2f w2 = obs.position - perp * (obs.radius + dynamic_clearance);
+
+    float d1 = (w1 - robot_pos).norm() + (target_pos - w1).norm();
+    float d2 = (w2 - robot_pos).norm() + (target_pos - w2).norm();
+    Eigen::Vector2f best_waypoint = (d1 < d2) ? w1 : w2;
+
+    return getAvoidanceTarget(robot_pos, best_waypoint, safety_margin, clearance, robot_heading_rad, recursion_depth + 1);
+  }
+
+  return target_pos;
+}
+
+Eigen::Vector2f ObstacleManager::getPotentialFieldTarget(const Eigen::Vector2f& robot_pos, 
+                                                        const Eigen::Vector2f& target_pos, 
+                                                        float ka, 
+                                                        float kr, 
+                                                        float influence_radius,
+                                                        float robot_heading_rad) const {
+  Eigen::Vector2f to_target = target_pos - robot_pos;
+  float dist_to_target = to_target.norm();
+  if (dist_to_target < 1e-4f) {
+    return target_pos;
+  }
+
+  Eigen::Vector2f F_attractive = (to_target / dist_to_target) * ka;
+  Eigen::Vector2f F_repulsive = Eigen::Vector2f::Zero();
+
+  for (const auto& obs : obstacles) {
+    Eigen::Vector2f to_obs = robot_pos - obs.position; 
+    float dist_to_center = to_obs.norm();
+    
+    float abs_obs_angle = std::atan2(to_obs.x(), to_obs.y());
+    float alpha = abs_obs_angle - robot_heading_rad;
+    
+    float sin_alpha = std::abs(std::sin(alpha));
+    float cos_alpha = std::abs(std::cos(alpha));
+    
+    float r_width = (robot_width / 2.0f) / (sin_alpha + 1e-6f);
+    float r_length = (robot_length / 2.0f) / (cos_alpha + 1e-6f);
+    float dynamic_clearance = std::min(r_width, r_length);
+
+    float effective_radius = obs.radius + dynamic_clearance + 1.0f;
+    float dist_to_boundary = dist_to_center - effective_radius;
+
+    if (dist_to_boundary <= 0.0f) {
+      Eigen::Vector2f dir = (dist_to_center > 1e-4f) ? to_obs / dist_to_center : Eigen::Vector2f(1.0f, 0.0f);
+      F_repulsive += dir * kr * 5.0f; 
+    } 
+    else if (dist_to_boundary <= influence_radius) {
+      Eigen::Vector2f dir = to_obs / dist_to_center; 
+      float factor = 1.0f - (dist_to_boundary / influence_radius);
+      
+      float force_mag = kr * factor / (dist_to_boundary + 0.1f);
+      
+      Eigen::Vector2f direct_repulse = dir * force_mag;
+      Eigen::Vector2f tangent(-dir.y(), dir.x());
+      if (tangent.dot(to_target) < 0) {
+          tangent = Eigen::Vector2f(dir.y(), -dir.x()); 
+      }
+
+      Eigen::Vector2f tangential_bypass = tangent * (force_mag * 0.85f);
+      F_repulsive += direct_repulse + tangential_bypass;
+    }
+  }
+
+  Eigen::Vector2f F_total = F_attractive + F_repulsive;
+  if (F_total.norm() < 1e-3f) {
+    F_total = F_attractive + Eigen::Vector2f(-F_attractive.y(), F_attractive.x()) * 0.5f;
+  }
+  float step_size = std::min(10.0f, dist_to_target);
+  return robot_pos + F_total.normalized() * step_size;
+}
+
+void Chassis::addObstacle(float x, float y, float radius) {
+  obstacles.addObstacle(x, y, radius);
+}
+
+void Chassis::removeObstacle(size_t index) {
+  obstacles.removeObstacle(index);
+}
+
+void Chassis::clearObstacles() {
+  obstacles.clearObstacles();
+}
+
+void Chassis::setAvoidanceMode(AvoidanceMode mode) {
+  avoidanceMode = mode;
+}
+
+void Chassis::setAvoidanceParams(float safetyMargin, float clearance) {
+  avoidanceSafetyMargin = safetyMargin;
+  avoidanceClearance = clearance;
+}
+
+void Chassis::setPotentialFieldParams(float ka, float kr, float influenceRadius) {
+  pf_ka = ka;
+  pf_kr = kr;
+  pf_influence_radius = influenceRadius;
+}
+
 void Chassis::calibrate()
 {
+  cancelAllMotions();
   backLeft.tare_position();
   backRight.tare_position();
   frontLeft.tare_position();
@@ -21,8 +206,27 @@ void Chassis::calibrate()
   prev_fl = 0, prev_fr = 0, prev_bl = 0, prev_br = 0;
   prev_heading = 0;
   targetHeadingDriveControl = 0;
+  for(int i = 0; i < motors.size(); i++)
+  {
+    try
+    {
+      if (motors[i].get_temperature() > 60) {
+        std::cout << "Motor " + std::to_string(i) + " overheating" << std::endl;
+      }
+    }
+    catch(...)
+    { 
+      std::cout << "Error when evaluating Motor " + std::to_string(i) << std::endl;
+    }
+  }
+
+  for (size_t i = 0; i < trackingWheelSensors.size(); ++i) {
+    trackingWheelSensors[i].reset_position();
+    prevTrackingPositions[i] = 0.0f;
+  }
   imu.reset(true);
   pros::c::controller_rumble(pros::E_CONTROLLER_MASTER, ".");
+  std::cout << "Chassis Calibrated" << std::endl;
 }
 
 std::vector<PathPoint> parsePathData(const std::string &input_source,
@@ -170,6 +374,8 @@ Chassis::Chassis(pros::Motor fl, pros::Motor fr, pros::Motor bl, pros::Motor br,
   prev_heading = (std::isinf(h) || std::isnan(h)) ? 0.0f : h * DEG2RAD;
 
   motionDistTraveled = 0.0f;
+
+  this->obstacles.setRobotDimensions(config.drivetrainWidth, config.drivetrainLength);
   motion.setOnMotionStart([this]() {
     poseMutex.take();
     motionDistTraveled = 0.0f;
@@ -197,49 +403,172 @@ void Chassis::odometryTask() {
   };
 
   while (true) {
-    float raw_fl = safeEnc(frontLeft, prev_fl);
-    float raw_fr = safeEnc(frontRight, prev_fr);
-    float raw_bl = safeEnc(backLeft, prev_bl);
-    float raw_br = safeEnc(backRight, prev_br);
 
     float raw_h = imu.get_rotation();
     float current_heading_meas = (std::isinf(raw_h) || std::isnan(raw_h))
                                      ? prev_heading
                                      : raw_h * DEG2RAD;
-
-    Eigen::Vector4f wheel_deltas(
-        (raw_fl - prev_fl) * d_per_deg, 
-        (raw_fr - prev_fr) * d_per_deg,
-        (raw_bl - prev_bl) * d_per_deg, 
-        (raw_br - prev_br) * d_per_deg
-    );
-    float d_theta_meas = std::remainder(current_heading_meas - prev_heading, 2.0f * M_PI);
+    float d_theta_meas = std::remainder(current_heading_meas - prev_heading, 2.0f * static_cast<float>(M_PI));
     if (std::isnan(d_theta_meas)) {
         d_theta_meas = 0.0f;
     }
-    Eigen::Vector2f local_delta = kinematics * wheel_deltas;
-    poseMutex.take();
-    ekf.predict(local_delta.x(), local_delta.y(), d_theta_meas);
-    ekf.updateIMU(current_heading_meas);
-    
-    float step_dist = std::hypot(local_delta.x(), local_delta.y());
-    motionDistTraveled += step_dist;
 
-    currentPose.x = ekf.getX();
-    currentPose.y = ekf.getY();
-    currentPose.theta = ekf.getTheta();
-    if(velocityCalculationsOn) {
-      currentPose.velocity.vx = local_delta.x() / 0.01;
-      currentPose.velocity.vy = local_delta.y() / 0.01;
-      currentPose.velocity.w = d_theta_meas / 0.01;
+    if (useTrackingWheels) {
+
+
+
+      const int n = static_cast<int>(trackingWheelConfigs.size());
+
+
+      Eigen::VectorXf measured_deltas(n);
+      int numVertical = 0;
+      int numHorizontal = 0;
+      float sumDyVertical = 0.0f;
+      float sumDxHorizontal = 0.0f;
+
+      for (int i = 0; i < n; ++i) {
+
+        int32_t raw_pos = trackingWheelSensors[i].get_position();
+        float current_pos = static_cast<float>(raw_pos);
+        float delta_centideg = current_pos - prevTrackingPositions[i];
+        prevTrackingPositions[i] = current_pos;
+
+
+
+        const auto& cfg = trackingWheelConfigs[i];
+        float delta_inches = (delta_centideg / 36000.0f) * static_cast<float>(M_PI)
+                             * cfg.wheelDiameter * cfg.gearRatio;
+        measured_deltas(i) = delta_inches;
+
+
+        if (cfg.orientation == TrackingWheelOrientation::VERTICAL) {
+
+
+          sumDyVertical += delta_inches + cfg.xOffset * d_theta_meas;
+          numVertical++;
+        } else {
+
+
+          sumDxHorizontal += delta_inches - cfg.yOffset * d_theta_meas;
+          numHorizontal++;
+        }
+      }
+
+
+      float dx_local = 0.0f;
+      float dy_local = 0.0f;
+
+      if (numHorizontal > 0) {
+        dx_local = sumDxHorizontal / static_cast<float>(numHorizontal);
+      }
+      if (numVertical > 0) {
+        dy_local = sumDyVertical / static_cast<float>(numVertical);
+      }
+
+
+      if (numHorizontal == 0) {
+        float raw_fl_tw = safeEnc(frontLeft, prev_fl);
+        float raw_fr_tw = safeEnc(frontRight, prev_fr);
+        float raw_bl_tw = safeEnc(backLeft, prev_bl);
+        float raw_br_tw = safeEnc(backRight, prev_br);
+        Eigen::Vector4f raw_enc(raw_fl_tw, raw_fr_tw, raw_bl_tw, raw_br_tw);
+        Eigen::Vector4f prev_enc_v(prev_fl, prev_fr, prev_bl, prev_br);
+        Eigen::Vector4f wheel_deltas_motor = (raw_enc - prev_enc_v) * d_per_deg;
+        Eigen::Vector2f motor_local = kinematics * wheel_deltas_motor;
+        dx_local = motor_local.x();
+        prev_fl = raw_fl_tw;
+        prev_fr = raw_fr_tw;
+        prev_bl = raw_bl_tw;
+        prev_br = raw_br_tw;
+      }
+
+      if (numVertical == 0) {
+        float raw_fl_tw = safeEnc(frontLeft, prev_fl);
+        float raw_fr_tw = safeEnc(frontRight, prev_fr);
+        float raw_bl_tw = safeEnc(backLeft, prev_bl);
+        float raw_br_tw = safeEnc(backRight, prev_br);
+        Eigen::Vector4f raw_enc(raw_fl_tw, raw_fr_tw, raw_bl_tw, raw_br_tw);
+        Eigen::Vector4f prev_enc_v(prev_fl, prev_fr, prev_bl, prev_br);
+        Eigen::Vector4f wheel_deltas_motor = (raw_enc - prev_enc_v) * d_per_deg;
+        Eigen::Vector2f motor_local = kinematics * wheel_deltas_motor;
+        dy_local = motor_local.y();
+        prev_fl = raw_fl_tw;
+        prev_fr = raw_fr_tw;
+        prev_bl = raw_bl_tw;
+        prev_br = raw_br_tw;
+      }
+
+      poseMutex.take();
+
+      ekf.predict(dx_local, dy_local, d_theta_meas);
+
+
+      ekf.updateTrackingWheels(trackingWheelConfigs, measured_deltas,
+                               dx_local, dy_local, d_theta_meas,
+                               trackingWheelMeasNoise);
+
+
+      float current_w = d_theta_meas / 0.01f;
+      float dynamic_R = measurementNoise + std::abs(current_w) * 0.005f;
+      ekf.updateIMU(current_heading_meas, dynamic_R);
+
+      float step_dist = std::sqrt(dx_local * dx_local + dy_local * dy_local);
+      motionDistTraveled += step_dist;
+
+      currentPose.x = ekf.getX();
+      currentPose.y = ekf.getY();
+      currentPose.theta = ekf.getTheta();
+      if (velocityCalculationsOn) {
+        currentPose.velocity.vx = dx_local / 0.01f;
+        currentPose.velocity.vy = dy_local / 0.01f;
+        currentPose.velocity.w = d_theta_meas / 0.01f;
+      }
+      poseMutex.give();
+
+    } else {
+
+
+
+      float raw_fl = safeEnc(frontLeft, prev_fl);
+      float raw_fr = safeEnc(frontRight, prev_fr);
+      float raw_bl = safeEnc(backLeft, prev_bl);
+      float raw_br = safeEnc(backRight, prev_br);
+
+      Eigen::Vector4f raw_enc(raw_fl, raw_fr, raw_bl, raw_br);
+      Eigen::Vector4f prev_enc(prev_fl, prev_fr, prev_bl, prev_br);
+      Eigen::Vector4f wheel_deltas = (raw_enc - prev_enc) * d_per_deg;
+
+      float track_radius = (config.drivetrainWidth + config.drivetrainLength) / 2.0f;
+      float vt_inches = (wheel_deltas(0) - wheel_deltas(1) + wheel_deltas(2) - wheel_deltas(3)) / 4.0f;
+      float d_theta_wheels = vt_inches / (y_component * track_radius);
+
+      Eigen::Vector2f local_delta = kinematics * wheel_deltas;
+      poseMutex.take();
+      ekf.predict(local_delta.x(), local_delta.y(), d_theta_wheels);
+
+      float current_w = d_theta_meas / 0.01f;
+      float dynamic_R = measurementNoise + std::abs(current_w) * 0.005f;
+      ekf.updateIMU(current_heading_meas, dynamic_R);
+
+      float step_dist = local_delta.norm();
+      motionDistTraveled += step_dist;
+
+      currentPose.x = ekf.getX();
+      currentPose.y = ekf.getY();
+      currentPose.theta = ekf.getTheta();
+      if(velocityCalculationsOn) {
+        currentPose.velocity.vx = local_delta.x() / 0.01;
+        currentPose.velocity.vy = local_delta.y() / 0.01;
+        currentPose.velocity.w = d_theta_meas / 0.01;
+      }
+      poseMutex.give();
+      prev_fl = raw_fl;
+      prev_fr = raw_fr;
+      prev_bl = raw_bl;
+      prev_br = raw_br;
     }
-    poseMutex.give();
-    prev_fl = raw_fl;
-    prev_fr = raw_fr;
-    prev_bl = raw_bl;
-    prev_br = raw_br;
-    prev_heading = current_heading_meas;
 
+    prev_heading = current_heading_meas;
     pros::Task::delay_until(&now, 10);
   }
 }
@@ -325,20 +654,26 @@ void Chassis::setThetaGains(std::vector<ScheduledGain> steps) {
 }
 
 void Chassis::driveControl(float forward, float sideways, float rotation,
-                           DriveCurves drivecurves,
-                           bool fieldCentric,
-                           float headingOffset,
-                           DriveCorrection correction)
+                            DriveCurves drivecurves,
+                            bool fieldCentric,
+                            float headingOffset,
+                            DriveCorrection correction)
 {
     static bool headingInitialized = false;
     static float targetHeading = 0.0f;
-    static PID headingPID(correction.kP, 0.0f, 0.0f, 0.0f);
+    static PID headingPID(0, 0, 0, 0);
     static uint32_t lastRotationTime = 0;
+    static bool wasRotating = false;
     constexpr float MAX_DRIVE_INPUT = 127.0f;
+    constexpr float SETTLE_DELAY_MS = 150.0f;
+    constexpr float MAX_CORRECTION = 40.0f;
+
     if (!headingInitialized) {
         targetHeading = getPose(false).theta;
+        headingPID.setGains({correction.kP, correction.kI, correction.kD, 0.0, 0.0});
         headingInitialized = true;
     }
+
     auto applyCurve = [&](float x, const DriveCurve& c) -> float {
         if (std::abs(x) < c.deadzone)
             return 0.0f;
@@ -397,44 +732,40 @@ void Chassis::driveControl(float forward, float sideways, float rotation,
             robotSideways *= scale;
         }
     }
-    if (std::abs(rotation) >= drivecurves.rotation.deadzone) {
 
-        rotation =
-            applyCurve(rotation,
-                       drivecurves.rotation);
+    bool isRotating = std::abs(rotation) >= drivecurves.rotation.deadzone;
 
+    if (isRotating) {
+        rotation = applyCurve(rotation, drivecurves.rotation);
         targetHeading = getPose(false).theta;
-
         lastRotationTime = pros::millis();
+        wasRotating = true;
 
     } else {
-        if (pros::millis() - lastRotationTime < 500) {
+        uint32_t timeSinceRotation = pros::millis() - lastRotationTime;
 
+        if (wasRotating) {
+            targetHeading = getPose(false).theta;
+            headingPID.reset();
+            headingPID.setGains({correction.kP, correction.kI, correction.kD, 0.0, 0.0});
+            wasRotating = false;
+        }
+
+        if (timeSinceRotation < (uint32_t)SETTLE_DELAY_MS) {
             rotation = 0.0f;
             targetHeading = getPose(false).theta;
+        } else if (correction.correctionOn) {
+            float currentHeading = getPose(false).theta;
+            float angleError = getAngleError(targetHeading, currentHeading);
 
-        } else {
-
-            if (correction.correctionOn) {
-
-                float currentHeading =
-                    getPose(false).theta;
-
-                float angleError =
-                    getAngleError(targetHeading,
-                                  currentHeading);
-
-                headingPID.setGains(
-                    thetaSched.getGains(angleError));
-
-                rotation =
-                    (float)headingPID.update(angleError);
-
-                rotation =
-                    std::clamp(rotation,
-                               -30.0f,
-                               30.0f);
+            if (std::abs(angleError) < 0.5f) {
+                rotation = 0.0f;
+            } else {
+                rotation = (float)headingPID.update(angleError);
+                rotation = std::clamp(rotation, -MAX_CORRECTION, MAX_CORRECTION);
             }
+        } else {
+            rotation = 0.0f;
         }
     }
     setMotorVoltages(
@@ -463,7 +794,6 @@ void Chassis::followPathPID(const std::vector<PathPoint> &path,
     std::cout << "[followPathPID] Invalid path." << std::endl;
     return;
   }
-
 
   motion.enqueue(
       [=, this]() {
@@ -590,8 +920,16 @@ void Chassis::followPathPID(const std::vector<PathPoint> &path,
               std::hypot(path.back().x - curr.x,
                          path.back().y - curr.y);
 
-          float globalDX = lookahead.x - curr.x;
-          float globalDY = lookahead.y - curr.y;
+          Eigen::Vector2f robotPos(curr.x, curr.y);
+          Eigen::Vector2f lookaheadTarget(lookahead.x, lookahead.y);
+          Eigen::Vector2f activeTarget = lookaheadTarget;
+
+        if (avoidanceMode == AvoidanceMode::On) {
+            activeTarget = obstacles.getPotentialFieldTarget(robotPos, lookaheadTarget, pf_ka, pf_kr, pf_influence_radius, getPose(true).theta);
+          }
+
+          float globalDX = activeTarget.x() - curr.x;
+          float globalDY = activeTarget.y() - curr.y;
 
           float localForward =
               globalDX * forwardX +
@@ -810,9 +1148,52 @@ void Chassis::turnToHeading(float targetDeg, MoveParams params) {
 }
 
 void Chassis::turnToPoint(float tx, float ty, MoveParams params) {
-  Pose p = getPose(false);
-  float targetDeg = std::atan2(ty - p.y, tx - p.x) * RAD2DEG;
-  turnToHeading(targetDeg, params);
+  motion.enqueue(
+      [=, this]() {
+        uint32_t start = pros::millis();
+        uint32_t settleStart = 0;
+        constexpr uint32_t settleTime = 100;
+
+        PID tPID(0, 0, 0, 0);
+        float prevError = 0.0f;
+
+        while (pros::millis() - start < params.timeout) {
+          Pose p = getPose(false);
+          float ex = tx - p.x;
+          float ey = ty - p.y;
+          float targetDeg = std::atan2(ex, ey) * RAD2DEG;
+          float error = getAngleError(targetDeg, p.theta);
+
+          if (params.earlyExitRange > 0.0f &&
+              std::abs(error) <= params.earlyExitRange)
+            return;
+
+          if (std::abs(error) < params.exitRange) {
+            if (settleStart == 0)
+              settleStart = pros::millis();
+            float vel = (error - prevError) / 0.01f;
+            if (pros::millis() - settleStart >= settleTime &&
+                std::abs(vel) < 0.5f)
+              break;
+          } else {
+            settleStart = 0;
+          }
+
+          tPID.setGains(thetaSched.getGains(error));
+          float output = (float)tPID.update(error);
+
+          if (std::abs(output) > 1e-3f && std::abs(output) < params.minSpeed)
+            output = std::copysign(params.minSpeed, output);
+          output = std::clamp(output, -params.maxRotationSpeed,
+                              params.maxRotationSpeed);
+
+          setMotorVoltages(calculateHolonomic(0, 0, output));
+          prevError = error;
+          pros::delay(10);
+        }
+        brake();
+      },
+      params.async);
 }
 
 void Chassis::moveToPoint(float tx, float ty, MoveParams params,
@@ -828,9 +1209,8 @@ void Chassis::moveToPoint(float tx, float ty, MoveParams params,
 
         while (pros::millis() - start < params.timeout) {
           Pose curr = getPose(false);
-          float ex = tx - curr.x;
-          float ey = ty - curr.y;
-          float distErr = std::hypot(ex, ey);
+          
+          float distErr = std::hypot(tx - curr.x, ty - curr.y);
 
           if (params.earlyExitRange > 0.0f && distErr <= params.earlyExitRange)
             return;
@@ -844,44 +1224,56 @@ void Chassis::moveToPoint(float tx, float ty, MoveParams params,
             settleStart = 0;
           }
 
+          Eigen::Vector2f robotPos(curr.x, curr.y);
+          Eigen::Vector2f targetPos(tx, ty);
+          Eigen::Vector2f activeTarget = targetPos;
+
+          if (avoidanceMode == AvoidanceMode::On) {
+            activeTarget = obstacles.getPotentialFieldTarget(robotPos, targetPos, pf_ka, pf_kr, pf_influence_radius, getPose(true).theta);
+          }
+
+          float ex_g = activeTarget.x() - curr.x;
+          float ey_g = activeTarget.y() - curr.y;
+
           float targetHeading =
-              angleCorrection ? std::atan2(ex, ey) * RAD2DEG : holdHeading;
+              angleCorrection ? std::atan2(ex_g, ey_g) * RAD2DEG : holdHeading;
           float angleError = getAngleError(targetHeading, curr.theta);
 
-          xPID.setGains(xSched.getGains(ex));
-          yPID.setGains(ySched.getGains(ey));
+          float rad = curr.theta * DEG2RAD;
+          float cosH = std::cos(rad), sinH = std::sin(rad);
+
+          float ex_local = ex_g * cosH - ey_g * sinH;
+          float ey_local = ex_g * sinH + ey_g * cosH;
+
+          xPID.setGains(xSched.getGains(std::abs(ex_local)));
+          yPID.setGains(ySched.getGains(std::abs(ey_local)));
           tPID.setGains(thetaSched.getGains(angleError));
 
-          float outX_g = (float)xPID.update(ex);
-          float outY_g = (float)yPID.update(ey);
+          float outX_local = (float)xPID.update(ex_local);
+          float outY_local = (float)yPID.update(ey_local);
           float outT = angleCorrection ? (float)tPID.update(angleError) : 0.0f;
 
-          float mag = std::hypot(outX_g, outY_g);
+          float mag = std::hypot(outX_local, outY_local);
           if (mag > 1e-3f && mag < params.minSpeed) {
             float s = params.minSpeed / mag;
-            outX_g *= s;
-            outY_g *= s;
+            outX_local *= s;
+            outY_local *= s;
           }
           if (mag > params.maxTranslationSpeed) {
             float s = params.maxTranslationSpeed / mag;
-            outX_g *= s;
-            outY_g *= s;
+            outX_local *= s;
+            outY_local *= s;
           }
           if (distErr < 2.0f)
             outT = 0.0f;
           outT = std::clamp(outT, -params.maxRotationSpeed,
                             params.maxRotationSpeed);
 
-          float rad = curr.theta * DEG2RAD;
-          float cosH = std::cos(rad), sinH = std::sin(rad);
-
-          float outX_local = outX_g * cosH - outY_g * sinH;
-          float outY_local = outX_g * sinH + outY_g * cosH;
-
           setMotorVoltages(calculateHolonomic(outX_local, outY_local, outT));
           pros::delay(10);
         }
         brake();
+        
       },
       params.async);
 }
@@ -901,25 +1293,19 @@ void Chassis::moveRelative(float forward, float sideways, MoveParams params,
         uint32_t startTime = pros::millis();
         uint32_t settleStart = 0;
         constexpr uint32_t settleTime = 120;
-        constexpr float angleExitDeg = 2.0f;
 
         PID xPID(0, 0, 0, 0), yPID(0, 0, 0, 0), tPID(0, 0, 0, 0);
 
         while (pros::millis() - startTime < params.timeout) {
           Pose curr = getPose(false);
-          float ex = targetX - curr.x;
-          float ey = targetY - curr.y;
-          float distErr = std::hypot(ex, ey);
+          
+          float distErr = std::hypot(targetX - curr.x, targetY - curr.y);
           float angleError = getAngleError(start.theta, curr.theta);
 
-          if (params.earlyExitRange > 0.0f &&
-              distErr <= params.earlyExitRange)
+          if (params.earlyExitRange > 0.0f && distErr <= params.earlyExitRange)
             return;
 
-          bool posSettled = distErr < params.exitRange;
-          bool angleSettled =
-              !holdHeading || std::abs(angleError) < angleExitDeg;
-          if (posSettled && angleSettled) {
+          if (distErr < params.exitRange) {
             if (settleStart == 0)
               settleStart = pros::millis();
             if (pros::millis() - settleStart >= settleTime)
@@ -927,6 +1313,18 @@ void Chassis::moveRelative(float forward, float sideways, MoveParams params,
           } else {
             settleStart = 0;
           }
+
+          Eigen::Vector2f robotPos(curr.x, curr.y);
+          Eigen::Vector2f targetPos(targetX, targetY);
+          Eigen::Vector2f activeTarget = targetPos;
+
+        
+          if (avoidanceMode == AvoidanceMode::On) {
+            activeTarget = obstacles.getPotentialFieldTarget(robotPos, targetPos, pf_ka, pf_kr, pf_influence_radius, getPose(true).theta);
+          }
+
+          float ex = activeTarget.x() - curr.x;
+          float ey = activeTarget.y() - curr.y;
 
           xPID.setGains(xSched.getGains(ex));
           yPID.setGains(ySched.getGains(ey));
@@ -937,7 +1335,7 @@ void Chassis::moveRelative(float forward, float sideways, MoveParams params,
           float outT = holdHeading ? (float)tPID.update(angleError) : 0.0f;
 
           float mag = std::hypot(outX_g, outY_g);
-          if (!posSettled && mag > 1e-3f && mag < params.minSpeed) {
+          if (mag > 1e-3f && mag < params.minSpeed) {
             float s = params.minSpeed / mag;
             outX_g *= s;
             outY_g *= s;
@@ -960,6 +1358,7 @@ void Chassis::moveRelative(float forward, float sideways, MoveParams params,
           pros::delay(10);
         }
         brake();
+        
       },
       params.async);
 }
@@ -1193,6 +1592,14 @@ void Chassis::cancelAllMotions() {
   brake();
 }
 
+float Chassis::getDistanceTraveled(bool convertToMeters) {
+  poseMutex.take();
+  float dist = motionDistTraveled;
+  poseMutex.give();
+  if (convertToMeters) return dist * 0.0254f;
+  return dist;
+}
+
 void Chassis::setEKFGains(float xProcessNoise, float yProcessNoise, float thetaProcessNoise, float measurementNoise) {
   ekf.setProcessNoise(xProcessNoise, yProcessNoise, thetaProcessNoise, measurementNoise);
 }
@@ -1205,28 +1612,30 @@ void Chassis::setVelocityCalculations(bool state)
 
 
 bool Chassis::detectCollision() {
-    const double TARGET_VEL_THRESHOLD = 30.0;   
+    const int32_t TARGET_VOLTAGE_THRESHOLD = 3000;   
     const uint32_t DEBOUNCE_TIME_MS = 250;      
 
-    static uint32_t last_check_time = pros::millis();
-    static uint32_t stall_accumulator_ms = 0;
-
+    if (last_collision_check_time == 0) last_collision_check_time = pros::millis();
+    
     uint32_t now = pros::millis();
-    uint32_t dt = now - last_check_time;
-    last_check_time = now;
+    uint32_t dt = now - last_collision_check_time;
+    last_collision_check_time = now;
     auto is_wheel_slipping = [&](pros::Motor& motor) {
-        double target = std::abs(motor.get_target_velocity());
+        int32_t commanded_voltage = std::abs(motor.get_voltage());
+        if (commanded_voltage < TARGET_VOLTAGE_THRESHOLD) {
+            return false;
+        }
+
         double actual = std::abs(motor.get_actual_velocity());
         int32_t current = motor.get_current_draw();
         double temp = motor.get_temperature();     
-        if (target < TARGET_VEL_THRESHOLD) {
-            return false;
-        }
+        
         int32_t dynamic_current_threshold = 1200; 
         if (temp > 50.0) {
             dynamic_current_threshold = 900;    
         }
-        bool speed_deficit = actual < (target * 0.70);
+        
+        bool speed_deficit = actual < 30.0;
         bool heavy_load = current > dynamic_current_threshold;
 
         return speed_deficit && heavy_load;
@@ -1249,8 +1658,89 @@ bool Chassis::detectCollision() {
 
 
 void Chassis::openLoop(float forward, float sideways, float rotation) {
-  setMotorVoltages(calculateHolonomic(forward, sideways, rotation));
+  setMotorVoltages(calculateHolonomic(sideways, forward, rotation));
 }
 
+float Chassis::radToDeg(float rad)
+{
+  return rad * RAD2DEG;
+}
 
+float Chassis::degToRad(float deg)
+{
+  return deg * DEG2RAD;
+}
+
+void Chassis::setEKFstate(bool state)
+{
+  this->config.kfEnabled = state;
+}
+
+void Chassis::addTrackingWheel(TrackingWheelConfig config) {
+  trackingWheelConfigs.push_back(config);
+  trackingWheelSensors.emplace_back(config.port);
+
+  int32_t initPos = trackingWheelSensors.back().get_position();
+  prevTrackingPositions.push_back(static_cast<float>(initPos));
+  useTrackingWheels = true;
+
+
+
+
+  ekf.setTrackingWheelNoise(0.0003f, 0.0003f, 0.001f);
+  trackingWheelMeasNoise = 0.0005f;
+
+  std::cout << "[Chassis] Added tracking wheel on port " << static_cast<int>(config.port)
+            << (config.orientation == TrackingWheelOrientation::HORIZONTAL ? " (horizontal)" : " (vertical)")
+            << " offset=(" << config.xOffset << ", " << config.yOffset << ")"
+            << " dia=" << config.wheelDiameter << " ratio=" << config.gearRatio
+            << std::endl;
+}
+
+void Chassis::clearTrackingWheels() {
+  trackingWheelConfigs.clear();
+  trackingWheelSensors.clear();
+  prevTrackingPositions.clear();
+  useTrackingWheels = false;
+
+
+  ekf.setProcessNoise(0.001f, 0.001f, 0.003f, 0.0001f);
+  std::cout << "[Chassis] Tracking wheels cleared, reverted to motor encoder odometry" << std::endl;
+}
+
+void Chassis::tuneMode(bool state) {
+  if (state) {
+    savedXSched = xSched;
+    savedYSched = ySched;
+    savedThetaSched = thetaSched;
+    
+
+    setXGains({{0.0f, {5.0f, 0.0f, 0.5f}}});
+    setYGains({{0.0f, {5.0f, 0.0f, 0.5f}}});
+    setThetaGains({{0.0f, {1.5f, 0.0f, 0.1f}}});
+    
+    tuneModeEnabled = true;
+    std::cout << "[Chassis] Tune Mode ENABLED. Gain schedulers saved, conservative defaults applied.\n";
+  } else {
+    xSched = savedXSched;
+    ySched = savedYSched;
+    thetaSched = savedThetaSched;
+    tuneModeEnabled = false;
+    std::cout << "[Chassis] Tune Mode DISABLED. Original gain schedulers restored.\n";
+  }
+}
+
+void Chassis::autoTunePID(TuneTarget target, float dist, int maxCycles) {
+  if (!tuneModeEnabled) {
+    std::cout << "[ERROR] Cannot run autoTunePID unless tuneMode is enabled!\n";
+    return;
+  }
+  TuneConfig config;
+  config.dist = dist;
+  config.maxCycles = maxCycles;
+  config.maxSpeed = 127.0f;
+  config.timeout = 8000;
+  
+  AutoTuner::run(this, target, config);
+}
 

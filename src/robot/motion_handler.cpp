@@ -14,9 +14,13 @@ void MotionHandler::enqueue(std::function<void()> motion, bool async) {
 
   mutex.take();
   lastEnqueuedId++;
-  queue.push([motion, done]() {
+  queue.push([this, motion, done]() {
     motion();
-    *done = true;
+    mutex.take();
+    if (running) {
+       *done = true;
+    }
+    mutex.give();
   });
   mutex.give();
 
@@ -89,6 +93,9 @@ void MotionHandler::loop() {
 
     if (currentMotion) {
       mutex.take();
+      if (!queue.empty()) {
+        queue.pop();
+      }
       running = true;
       currentRunningId++;
       if (onMotionStartCallback) {
@@ -100,9 +107,6 @@ void MotionHandler::loop() {
 
       mutex.take();
       running = false;
-      if (!queue.empty()) {
-        queue.pop();
-      }
       mutex.give();
     } else {
       pros::delay(10);

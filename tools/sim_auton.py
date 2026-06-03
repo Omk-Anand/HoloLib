@@ -271,6 +271,22 @@ def parse_path_strings(source_or_body):
             except ValueError:
                 pass
         paths[name] = points
+
+    vector_pattern = re.compile(
+        r"\b(?:std::)?vector\s*<\s*PathPoint\s*>\s+(\w+)\s*(?:=\s*)?\{([^;]+)\}\s*;", re.DOTALL
+    )
+    for name, raw in vector_pattern.findall(source_or_body):
+        points = []
+        point_pattern = re.compile(r"\{\s*([-+]?\d*\.?\d+)\s*,\s*([-+]?\d*\.?\d+)\s*(?:,\s*([-+]?\d*\.?\d+)\s*)?\}")
+        for x_val, y_val, theta_val in point_pattern.findall(raw):
+            points.append({
+                "x": float(x_val),
+                "y": float(y_val),
+                "theta": float(theta_val) if theta_val else (points[-1]["theta"] if points else 0.0)
+            })
+        if points:
+            paths[name] = points
+
     return paths
 
 
@@ -278,7 +294,7 @@ def find_all_calls(body):
     """Finds chassis motions and thread delays sequentially while preserving RTOS execution order."""
     calls = []
     i = 0
-    prefixes = ["chassis.", "pros::Task::delay", "pros::delay", "delay"]
+    prefixes = ["chassis.", "chassis->", "pros::Task::delay", "pros::delay", "delay"]
     
     while i < len(body):
         next_start = -1
@@ -301,7 +317,7 @@ def find_all_calls(body):
             
         name_start = next_start + len(found_prefix)
         
-        if found_prefix == "chassis.":
+        if found_prefix in ("chassis.", "chassis->"):
             name_match = re.match(r"([A-Za-z_]\w*)\s*\(", body[name_start:])
             if not name_match:
                 i = name_start
@@ -433,7 +449,7 @@ def resolve_path_name(source, arg_str):
     if inline_match:
         return inline_match.group(1)
         
-    # Pattern 2: C++ Vector variable declaration tracking
+    # Pattern 2: C++ Vector variable declaration tracking or generic vector names
     var_name = arg_str
     if re.match(r"^[A-Za-z_]\w*$", var_name):
         pattern = re.compile(
@@ -443,6 +459,8 @@ def resolve_path_name(source, arg_str):
         var_match = pattern.search(source)
         if var_match:
             return var_match.group(1)
+            
+        return var_name
             
     return None
 
@@ -1066,8 +1084,8 @@ def simulate(source, body):
             ty = get_arg_val_local(args, 1, state["y"])
             p_val = get_call_params(args, 2)
             
-            # C++ turnToPoint atan2 format
-            target_theta = math.degrees(math.atan2(ty - state["y"], tx - state["x"]))
+            # Fix atan2 format
+            target_theta = math.degrees(math.atan2(tx - state["x"], ty - state["y"]))
             
             history, state = run_motion_sim(state, state["x"], state["y"], target_theta, p_val, False, x_sched, y_sched, theta_sched)
             active_trajectory = history

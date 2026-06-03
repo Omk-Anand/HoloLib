@@ -1,10 +1,13 @@
 #pragma once
 
 #include "Eigen/Core"
+#include "Eigen/Dense"
 #include "Eigen/Geometry"
 #include "PID.h"
 #include "api.h"
+#include "auto_tuner.h"
 #include "motion_handler.h"
+#include "pros/rotation.hpp"
 #include <algorithm>
 #include <cmath>
 #include <functional>
@@ -12,35 +15,80 @@
 #include <string>
 #include <vector>
 
+struct Obstacle {
+  Eigen::Vector2f position;
+  float radius;
+};
+
+class ObstacleManager {
+public:
+  ObstacleManager() = default;
+
+  void setRobotDimensions(float width, float length);
+  void addObstacle(float x, float y, float radius);
+  void removeObstacle(size_t index);
+  void clearObstacles();
+  const std::vector<Obstacle> &getObstacles() const;
+
+  bool checkIntersection(const Eigen::Vector2f &start,
+                         const Eigen::Vector2f &end, float safety_margin,
+                         Obstacle &out_obstacle,
+                         Eigen::Vector2f &out_closest) const;
+
+  Eigen::Vector2f getAvoidanceTarget(const Eigen::Vector2f &robot_pos,
+                                     const Eigen::Vector2f &target_pos,
+                                     float safety_margin, float clearance,
+                                     float robot_heading_rad,
+                                     int recursion_depth = 0) const;
+
+  Eigen::Vector2f getPotentialFieldTarget(const Eigen::Vector2f &robot_pos,
+                                          const Eigen::Vector2f &target_pos,
+                                          float ka, float kr,
+                                          float influence_radius,
+                                          float robot_heading_rad) const;
+
+private:
+  std::vector<Obstacle> obstacles;
+  float robot_width = 18.0f;
+  float robot_length = 18.0f;
+};
+
+enum class TrackingWheelOrientation { HORIZONTAL, VERTICAL };
+
+struct TrackingWheelConfig {
+  int8_t port;
+  TrackingWheelOrientation orientation;
+  float xOffset;
+  float yOffset;
+  float wheelDiameter;
+  float gearRatio;
+};
+
 class PoseEKF {
 private:
   Eigen::Vector3f x;
   Eigen::Matrix3f P;
-  Eigen::Matrix3f Q;
   Eigen::Matrix<float, 1, 3> H;
-  float R;
-  float xProcessNoise = 0.01f, yProcessNoise = 0.01f, thetaProcessNoise = 0.001f, measurementNoise = 0.00045f;
-
+  float measurementNoise;
+  float xProcessNoise = 0.001f, yProcessNoise = 0.001f,
+        thetaProcessNoise = 0.003f;
 
 public:
-  void setProcessNoise(float xNoise, float yNoise, float thetaNoise, float measurementNoise) {
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+  void setProcessNoise(float xNoise, float yNoise, float thetaNoise,
+                       float measNoise) {
     xProcessNoise = xNoise;
     yProcessNoise = yNoise;
     thetaProcessNoise = thetaNoise;
-    measurementNoise = measurementNoise;
-    Q << xProcessNoise, 0, 0, 0, yProcessNoise, 0, 0, 0, thetaProcessNoise;
-    R = measurementNoise;
+    measurementNoise = measNoise;
   }
-
 
   PoseEKF(float initial_x, float initial_y, float initial_theta) {
     x << initial_x, initial_y, initial_theta;
     P.setZero();
-
-    Q << xProcessNoise, 0, 0, 0, yProcessNoise, 0, 0, 0, thetaProcessNoise;
-
     H << 0, 0, 1;
-    R = measurementNoise;
+    measurementNoise = 0.0001f;
   }
 
   void predict(float dx_local, float dy_local, float dtheta) {
@@ -53,37 +101,130 @@ public:
       c = (1.0f - std::cos(dtheta)) / dtheta;
     }
 
-    float dx_arc = dx_local * s + dy_local * c;
-    float dy_arc = -dx_local * c + dy_local * s;
+    Eigen::Vector2f local_d(dx_local, dy_local);
+    Eigen::Matrix2f R_arc;
+    R_arc << s, c, -c, s;
+    Eigen::Vector2f arc_d = R_arc * local_d;
 
     float prev_theta = x(2);
     float cos_t = std::cos(prev_theta);
     float sin_t = std::sin(prev_theta);
 
-    float dx_global = dx_arc * cos_t + dy_arc * sin_t;
-    float dy_global = -dx_arc * sin_t + dy_arc * cos_t;
+    Eigen::Matrix2f R_global;
+    R_global << cos_t, sin_t, -sin_t, cos_t;
+    Eigen::Vector2f global_d = R_global * arc_d;
 
-    x(0) += dx_global;
-    x(1) += dy_global;
+    x.head<2>() += global_d;
     x(2) += dtheta;
-
     x(2) = std::remainder(x(2), 2.0f * M_PI);
 
     Eigen::Matrix3f F = Eigen::Matrix3f::Identity();
-    F(0, 2) = dy_global;
-    F(1, 2) = -dx_global;
+    F(0, 2) = global_d.y();
+    F(1, 2) = -global_d.x();
 
-    P = F * P * F.transpose() + Q;
+    Eigen::Matrix3f Q_step = Eigen::Matrix3f::Zero();
+    float var_x = xProcessNoise * std::abs(dx_local) + 1e-6f;
+    float var_y = yProcessNoise * std::abs(dy_local) + 1e-6f;
+    Eigen::Matrix2f Q_local;
+    Q_local << var_x, 0, 0, var_y;
+
+    Q_step.block<2, 2>(0, 0) = R_global * Q_local * R_global.transpose();
+    Q_step(2, 2) = thetaProcessNoise * std::abs(dtheta) + 1e-7f;
+
+    P = F * P * F.transpose() + Q_step;
   }
 
-  void updateIMU(float measured_theta) {
+  void updateIMU(float measured_theta, float dynamic_R) {
     float y = measured_theta - x(2);
     y = std::remainder(y, 2.0f * M_PI);
-    float S = (H * P * H.transpose())(0, 0) + R;
+    float S = (H * P * H.transpose())(0, 0) + dynamic_R;
     Eigen::Vector3f K = P * H.transpose() / S;
     x = x + K * y;
     x(2) = std::remainder(x(2), 2.0f * M_PI);
     P = (Eigen::Matrix3f::Identity() - K * H) * P;
+  }
+
+  
+
+
+
+
+
+
+
+ 
+  void updateTrackingWheels(const std::vector<TrackingWheelConfig> &configs,
+                            const Eigen::VectorXf &measured_deltas,
+                            float dx_local, float dy_local, float dtheta,
+                            float wheel_noise) {
+    const int n = static_cast<int>(configs.size());
+    if (n == 0 || measured_deltas.size() != n)
+      return;
+
+
+
+
+
+    float theta = x(2);
+    float cos_t = std::cos(theta);
+    float sin_t = std::sin(theta);
+
+    Eigen::MatrixXf H_tw(n, 3);
+    Eigen::VectorXf z_pred(n);
+
+    for (int i = 0; i < n; ++i) {
+      float ox = configs[i].xOffset;
+      float oy = configs[i].yOffset;
+
+      if (configs[i].orientation == TrackingWheelOrientation::VERTICAL) {
+
+
+
+
+
+
+
+
+        z_pred(i) = dy_local - ox * dtheta;
+        H_tw(i, 0) = -sin_t;
+        H_tw(i, 1) = cos_t;
+        H_tw(i, 2) = -ox;
+      } else {
+
+
+        z_pred(i) = dx_local + oy * dtheta;
+        H_tw(i, 0) = cos_t;
+        H_tw(i, 1) = sin_t;
+        H_tw(i, 2) = oy;
+      }
+    }
+
+
+    Eigen::VectorXf y_innov = measured_deltas - z_pred;
+
+
+    Eigen::MatrixXf R_tw = Eigen::MatrixXf::Identity(n, n) * wheel_noise;
+
+
+    Eigen::MatrixXf S = H_tw * P * H_tw.transpose() + R_tw;
+
+
+    Eigen::MatrixXf K = P * H_tw.transpose() * S.inverse();
+
+
+    x += K * y_innov;
+    x(2) = std::remainder(x(2), 2.0f * static_cast<float>(M_PI));
+
+
+    Eigen::Matrix3f I3 = Eigen::Matrix3f::Identity();
+    Eigen::Matrix3f IKH = I3 - K * H_tw;
+    P = IKH * P * IKH.transpose() + K * R_tw * K.transpose();
+  }
+
+  void setTrackingWheelNoise(float xNoise, float yNoise, float thetaNoise) {
+    xProcessNoise = xNoise;
+    yProcessNoise = yNoise;
+    thetaProcessNoise = thetaNoise;
   }
 
   float getX() const { return x(0); }
@@ -96,8 +237,7 @@ public:
   }
 };
 
-struct VelocityComponents
-{
+struct VelocityComponents {
   float vx, vy, w;
 };
 
@@ -138,8 +278,7 @@ struct DriveCurves {
   DriveCurve rotation;
 };
 
-struct DriveCorrection
-{
+struct DriveCorrection {
   bool correctionOn = true;
   float kP = 1.0f;
   float kI = 0.01f;
@@ -166,13 +305,14 @@ std::vector<PathPoint> parsePathData(const std::string &input_source,
 
 class GainScheduler {
 public:
-  void addStep(float threshold, float kP, float kI, float kD, float slew = 0.0f);
+  void addStep(float threshold, float kP, float kI, float kD,
+               float slew = 0.0f);
 
   PIDGains getGains(float error) const;
 
   void clear();
 
- private:
+private:
   std::vector<ScheduledGain> schedules;
 };
 
@@ -211,10 +351,16 @@ public:
   void brake();
 
   void driveControl(float forward, float sideways, float rotation,
-                    DriveCurves drivecurves, bool fieldCentric, float headingOffset = 0.0f, DriveCorrection correction = {});
+                    DriveCurves drivecurves, bool fieldCentric,
+                    float headingOffset = 0.0f,
+                    DriveCorrection correction = {});
 
-  enum class HeadingMode { FollowPath, HoldAngle, CustomAngles};
+  void tuneMode(bool state);
+  void autoTunePID(TuneTarget target, float dist, int maxCycles = 20);
+
+  enum class HeadingMode { FollowPath, HoldAngle, CustomAngles };
   enum class CurveDirection { Auto, CW, CCW };
+  enum class AvoidanceMode { Off, On };
 
   void followPathPID(const std::vector<PathPoint> &path, float lookahead_inches,
                      MoveParams params = {},
@@ -251,14 +397,14 @@ public:
 
   void odometryTask();
 
-  void getDistanceTraveled(bool convertToMeters = false);
+  float getDistanceTraveled(bool convertToMeters = false);
 
   void cancelMotion();
 
   void waitUntil(float distance);
 
-  void setEKFGains(float xProcessNoise, float yProcessNoise, float thetaProcessNoise,
-                   float measurementNoise);
+  void setEKFGains(float xProcessNoise, float yProcessNoise,
+                   float thetaProcessNoise, float measurementNoise);
 
   void setVelocityCalculations(bool state);
 
@@ -266,8 +412,29 @@ public:
 
   void openLoop(float forward, float sideways, float rotation);
 
+  void addObstacle(float x, float y, float radius);
+  void removeObstacle(size_t index);
+  void clearObstacles();
+  void setAvoidanceMode(AvoidanceMode mode);
+  void setAvoidanceParams(float safetyMargin, float clearance);
+  void setPotentialFieldParams(float ka, float kr, float influenceRadius);
+
+  void setRobotDimensionsAvoidance(float width, float height);
+  float radToDeg(float rad);
+  float degToRad(float deg);
+
+  void setEKFstate(bool state);
+
+  void addTrackingWheel(TrackingWheelConfig config);
+  void clearTrackingWheels();
+
+  template <typename F>
+  void move(F updateFunction, MoveParams params = {}, bool fieldCentric = true,
+            float headingOffset = 0.0f, DriveCorrection correction = {}) {}
+
 private:
   pros::Motor frontLeft, frontRight, backLeft, backRight;
+  std::vector<pros::Motor> motors{frontLeft, frontRight, backLeft, backRight};
   pros::Imu imu;
   ChassisConfig config;
 
@@ -282,8 +449,30 @@ private:
   float targetHeadingDriveControl = 0;
   friend void odomTaskTrampoline(void *);
   float motionDistTraveled = 0.0f;
-  float xProcessNoise = 0.01f, yProcessNoise = 0.01f, thetaProcessNoise = 0.001f, measurementNoise = 0.00045f;
+  float xProcessNoise = 0.001f, yProcessNoise = 0.001f,
+        thetaProcessNoise = 0.003f, measurementNoise = 0.0001f;
   bool velocityCalculationsOn = false;
+
+  ObstacleManager obstacles;
+  AvoidanceMode avoidanceMode = AvoidanceMode::Off;
+  float avoidanceSafetyMargin = 4.0f;
+  float avoidanceClearance = 8.0f;
+  float pf_ka = 5.0f;
+  float pf_kr = 50.0f;
+  float pf_influence_radius = 15.0f;
+
+  bool tuneModeEnabled = false;
+  GainScheduler savedXSched, savedYSched, savedThetaSched;
+
+  uint32_t last_collision_check_time = 0;
+  uint32_t stall_accumulator_ms = 0;
+
+
+  std::vector<TrackingWheelConfig> trackingWheelConfigs;
+  std::vector<pros::Rotation> trackingWheelSensors;
+  std::vector<float> prevTrackingPositions;
+  bool useTrackingWheels = false;
+  float trackingWheelMeasNoise = 0.0005f;
 };
 
 inline float getAngleError(float target, float current) {

@@ -8,7 +8,8 @@
 #include <vector>
 
 class Chassis;
-struct Path;
+struct PathPoint;
+using Path = std::vector<PathPoint>;
 struct Pose;
 
 struct State {
@@ -44,6 +45,9 @@ public:
     bool log = false;
   };
 
+  Config config;
+
+  HolonomicLQR(Chassis *chassis_ptr, const Config& cfg, float dtSeconds = 0.01f);
   HolonomicLQR(Chassis *chassis_ptr, float dtSeconds = 0.01f);
 
   void followPath(const Path &path);
