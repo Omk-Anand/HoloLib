@@ -795,311 +795,231 @@ void Chassis::followPathPID(const std::vector<PathPoint> &path,
     return;
   }
 
-  motion.enqueue(
-      [=, this]() {
-
-        PID forwardPID(0, 0, 0, 0);
-        PID strafePID(0, 0, 0, 0);
-        PID thetaPID(0, 0, 0, 0);
-
-        uint32_t start = pros::millis();
-
-        uint32_t settleStart = 0;
-        constexpr uint32_t settleTime = 120;
-
-        int closestSegment = 0;
-        float closestT = 0.0f;
-
-        float lockedHeading =
-            (headingMode == HeadingMode::HoldAngle)
-                ? holdAngleDeg
-                : getPose(false).theta;
-        std::cout << "Locked Heading: " << lockedHeading << std::endl;
-
-        while (pros::millis() - start < params.timeout) {
-
-          Pose curr = getPose(false);
-
-          float headingRad = curr.theta * DEG2RAD;
-
-          float forwardX = std::sin(headingRad);
-          float forwardY = std::cos(headingRad);
-
-          float strafeX = std::cos(headingRad);
-          float strafeY = -std::sin(headingRad);
-
-          float bestDist = std::numeric_limits<float>::max();
-
-          PathPoint closestPoint = path.front();
-
-          for (int i = closestSegment;
-               i < (int)path.size() - 1;
-               ++i) {
-
-            const PathPoint &a = path[i];
-            const PathPoint &b = path[i + 1];
-
-            float abx = b.x - a.x;
-            float aby = b.y - a.y;
-
-            float apx = curr.x - a.x;
-            float apy = curr.y - a.y;
-
-            float ab2 = abx * abx + aby * aby;
-
-            if (ab2 < 1e-6f)
-              continue;
-
-            float t = (apx * abx + apy * aby) / ab2;
-            t = std::clamp(t, 0.0f, 1.0f);
-
-            float projX = a.x + abx * t;
-            float projY = a.y + aby * t;
-
-            float dist =
-                std::hypot(projX - curr.x,
-                           projY - curr.y);
-            if (dist < bestDist) {
-              bestDist = dist;
-              closestPoint.x = projX;
-              closestPoint.y = projY;
-              float segmentAngleDiff = getAngleError(b.theta, a.theta);
-              closestPoint.theta = a.theta + segmentAngleDiff * t;
-
-              closestSegment = i;
-              closestT = t;
-            }
-          }
-
-          PathPoint lookahead = closestPoint;
-          float remaining = lookaheadDistance;
-          int seg = closestSegment;
-
-          while (seg < (int)path.size() - 1) {
-
-            const PathPoint &a = path[seg];
-            const PathPoint &b = path[seg + 1];
-
-            float startX;
-            float startY;
-
-            if (seg == closestSegment) {
-              startX = closestPoint.x;
-              startY = closestPoint.y;
-            } else {
-              startX = a.x;
-              startY = a.y;
-            }
-
-            float dx = b.x - startX;
-            float dy = b.y - startY;
-
-            float segLen = std::hypot(dx, dy);
-
-            if (segLen >= remaining) {
-
-              float ratio = remaining / segLen;
-
-              lookahead.x = startX + dx * ratio;
-              lookahead.y = startY + dy * ratio;
-              float angleDiff = getAngleError(b.theta, a.theta);
-              lookahead.theta = a.theta + angleDiff * ratio;
-
-              break;
-            }
-
-            remaining -= segLen;
-            seg++;
-          }
-
-          if (seg >= (int)path.size() - 1) {
-            lookahead = path.back();
-          }
-
-          float distToEnd =
-              std::hypot(path.back().x - curr.x,
-                         path.back().y - curr.y);
-
-          Eigen::Vector2f robotPos(curr.x, curr.y);
-          Eigen::Vector2f lookaheadTarget(lookahead.x, lookahead.y);
-          Eigen::Vector2f activeTarget = lookaheadTarget;
-
-        if (avoidanceMode == AvoidanceMode::On) {
-            activeTarget = obstacles.getPotentialFieldTarget(robotPos, lookaheadTarget, pf_ka, pf_kr, pf_influence_radius, getPose(true).theta);
-          }
-
-          float globalDX = activeTarget.x() - curr.x;
-          float globalDY = activeTarget.y() - curr.y;
-
-          float localForward =
-              globalDX * forwardX +
-              globalDY * forwardY;
-
-          float localStrafe =
-              globalDX * strafeX +
-              globalDY * strafeY;
-
-          if (reversed) {
-            localForward *= -1.0f;
-            localStrafe *= -1.0f;
-          }
-
-          float targetHeading;
-
-          switch (headingMode) {
-
-          case HeadingMode::FollowPath:
-
-            if (distToEnd > 4.0f) {
-
-              targetHeading =
-                  std::atan2(globalDX, globalDY) *
-                  (180.0f / M_PI);
-
-              if (reversed)
-                targetHeading += 180.0f;
-
-            } else {
-
-              float finalDX =
-                  path.back().x -
-                  path[path.size() - 2].x;
-
-              float finalDY =
-                  path.back().y -
-                  path[path.size() - 2].y;
-
-              targetHeading =
-                  std::atan2(finalDX, finalDY) *
-                  (180.0f / M_PI);
-
-              if (reversed)
-                targetHeading += 180.0f;
-            }
-
-            break;
-
-          case HeadingMode::HoldAngle:
-            targetHeading = lockedHeading;
-            break;
-
-          case HeadingMode::CustomAngles:
-            targetHeading = lookahead.theta;
-            if (reversed) {
-              targetHeading += 180.0f;
-            }
-            break;
-
-          default:
-            targetHeading = curr.theta;
-            break;
-          }
-
-          float angleError =
-              getAngleError(targetHeading,
-                            curr.theta);
-
-          if (params.earlyExitRange > 0.0f &&
-              distToEnd <= params.earlyExitRange) {
-            break;
-          }
-
-          bool settledPos =
-              distToEnd < params.exitRange;
-
-          bool settledAngle =
-              std::abs(angleError) < 2.0f;
-
-          if (settledPos && settledAngle) {
-
-            if (settleStart == 0)
-              settleStart = pros::millis();
-
-            if (pros::millis() - settleStart >= settleTime)
-              break;
-
-          } else {
-            settleStart = 0;
-          }
-
-          forwardPID.setGains(
-              ySched.getGains(localForward));
-
-          strafePID.setGains(
-              xSched.getGains(localStrafe));
-
-          thetaPID.setGains(
-              thetaSched.getGains(angleError));
-
-          float forward =
-              (float)forwardPID.update(localForward);
-
-          float strafe =
-              (float)strafePID.update(localStrafe);
-
-          float turn =
-              (float)thetaPID.update(angleError);
-
-          float translationalMag =
-              std::hypot(forward, strafe);
-
-          if (translationalMag >
-              params.maxTranslationSpeed) {
-
-            float scale =
-                params.maxTranslationSpeed /
-                translationalMag;
-
-            forward *= scale;
-            strafe *= scale;
-          }
-
-          if (translationalMag > 1e-3f &&
-              translationalMag < params.minSpeed &&
-              distToEnd > params.exitRange) {
-
-            float scale =
-                params.minSpeed /
-                translationalMag;
-
-            forward *= scale;
-            strafe *= scale;
-          }
-
-          turn = std::clamp(
-              turn,
-              -params.maxRotationSpeed,
-              params.maxRotationSpeed);
-
-          float total =
-              std::abs(forward) +
-              std::abs(strafe) +
-              std::abs(turn);
-
-          float maxTotal =
-              params.maxTranslationSpeed;
-
-          if (total > maxTotal) {
-
-            float scale = maxTotal / total;
-
-            forward *= scale;
-            strafe *= scale;
-            turn *= scale;
-          }
-
-          setMotorVoltages(
-              calculateHolonomic(
-                  strafe,
-                  forward,
-                  turn));
-
-          pros::delay(10);
+  motion.enqueue([=, this]() {
+
+    PID forwardPID(0, 0, 0, 0);
+    PID strafePID(0, 0, 0, 0);
+    PID thetaPID(0, 0, 0, 0);
+
+    uint32_t start       = pros::millis();
+    uint32_t settleStart = 0;
+    constexpr uint32_t settleTime = 120;
+
+    const int N = static_cast<int>(path.size());
+    std::vector<float> arcLen(N, 0.0f);
+    for (int i = 1; i < N; ++i) {
+      float dx = path[i].x - path[i-1].x;
+      float dy = path[i].y - path[i-1].y;
+      arcLen[i] = arcLen[i-1] + std::hypot(dx, dy);
+    }
+    float totalPathLen = arcLen[N-1];
+
+    float lockedHeading = (headingMode == HeadingMode::HoldAngle)
+                              ? holdAngleDeg
+                              : getPose(false).theta;
+
+    
+    float pathProgress = 0.0f;
+    Pose  prevPose     = getPose(false);
+    uint32_t lastProgressTime = pros::millis();
+    float    lastProgress     = 0.0f;
+    constexpr uint32_t stallTimeout = 1000;
+    auto samplePath = [&](float s) -> PathPoint {
+      s = std::clamp(s, 0.0f, totalPathLen);
+      int lo = 0, hi = N - 2;
+      while (lo < hi) {
+        int mid = (lo + hi + 1) / 2;
+        if (arcLen[mid] <= s) lo = mid;
+        else                  hi = mid - 1;
+      }
+      float segLen = arcLen[lo+1] - arcLen[lo];
+      float t      = (segLen > 1e-6f) ? (s - arcLen[lo]) / segLen : 0.0f;
+      PathPoint p;
+      p.x     = path[lo].x + t * (path[lo+1].x - path[lo].x);
+      p.y     = path[lo].y + t * (path[lo+1].y - path[lo].y);
+      p.theta = path[lo].theta + t * getAngleError(path[lo+1].theta, path[lo].theta);
+      return p;
+    };
+
+    auto pathTangentDeg = [&](float s) -> float {
+      s = std::clamp(s, 0.0f, totalPathLen);
+      int lo = 0, hi = N - 2;
+      while (lo < hi) {
+        int mid = (lo + hi + 1) / 2;
+        if (arcLen[mid] <= s) lo = mid;
+        else                  hi = mid - 1;
+      }
+      float dx = path[lo+1].x - path[lo].x;
+      float dy = path[lo+1].y - path[lo].y;
+      return std::atan2(dx, dy) * (180.0f / static_cast<float>(M_PI));
+    };
+
+    while (pros::millis() - start < params.timeout) {
+
+      Pose curr = getPose(false);
+
+      {
+        float dxOdom = curr.x - prevPose.x;
+        float dyOdom = curr.y - prevPose.y;
+        float dist   = std::hypot(dxOdom, dyOdom);
+
+        if (dist > 1e-4f) {
+          float tangentDeg = pathTangentDeg(pathProgress);
+          float tangentRad = tangentDeg * (static_cast<float>(M_PI) / 180.0f);
+          float tx = std::sin(tangentRad);
+          float ty = std::cos(tangentRad);
+
+          float along = dxOdom * tx + dyOdom * ty;
+
+          along = std::max(along, -0.05f * dist);
+
+          pathProgress += along;
+          pathProgress  = std::clamp(pathProgress, 0.0f, totalPathLen);
         }
 
-        brake();
-      },
-      params.async);
+        prevPose = curr;
+      }
+
+      {
+        PathPoint onPath  = samplePath(pathProgress);
+        float     exError = curr.x - onPath.x;
+        float     eyError = curr.y - onPath.y;
+
+        float tangentDeg = pathTangentDeg(pathProgress);
+        float tangentRad = tangentDeg * (static_cast<float>(M_PI) / 180.0f);
+        float tx = std::sin(tangentRad);
+        float ty = std::cos(tangentRad);
+
+        float sErr = exError * tx + eyError * ty;
+
+        float correction = std::clamp(sErr * 0.05f,
+                                      -lookaheadDistance * 0.25f,
+                                      lookaheadDistance * 0.25f);
+        pathProgress = std::clamp(pathProgress + correction, 0.0f, totalPathLen);
+      }
+
+      float     lookaheadS = std::min(pathProgress + lookaheadDistance, totalPathLen);
+      PathPoint lookahead  = samplePath(lookaheadS);
+
+      Eigen::Vector2f robotPos(curr.x, curr.y);
+      Eigen::Vector2f lookaheadVec(lookahead.x, lookahead.y);
+      Eigen::Vector2f activeTarget = lookaheadVec;
+
+      if (avoidanceMode == AvoidanceMode::On) {
+        activeTarget = obstacles.getPotentialFieldTarget(
+            robotPos, lookaheadVec, pf_ka, pf_kr,
+            pf_influence_radius, getPose(true).theta);
+      }
+
+      float headingRad = curr.theta * DEG2RAD;
+      float forwardX   =  std::sin(headingRad);
+      float forwardY   =  std::cos(headingRad);
+      float strafeX    =  std::cos(headingRad);
+      float strafeY    = -std::sin(headingRad);
+
+      float globalDX = activeTarget.x() - curr.x;
+      float globalDY = activeTarget.y() - curr.y;
+
+      float localForward = globalDX * forwardX + globalDY * forwardY;
+      float localStrafe  = globalDX * strafeX  + globalDY * strafeY;
+
+      if (reversed) {
+        localForward = -localForward;
+        localStrafe  = -localStrafe;
+      }
+
+      float distToEnd = totalPathLen - pathProgress;
+
+      float targetHeading;
+      switch (headingMode) {
+
+        case HeadingMode::FollowPath: {
+          float tangentS = std::min(pathProgress + 2.0f, totalPathLen);
+          targetHeading  = pathTangentDeg(tangentS);
+          if (reversed) targetHeading += 180.0f;
+          break;
+        }
+
+        case HeadingMode::HoldAngle:
+          targetHeading = lockedHeading;
+          break;
+
+        case HeadingMode::CustomAngles:
+          targetHeading = lookahead.theta;
+          if (reversed) targetHeading += 180.0f;
+          break;
+
+        default:
+          targetHeading = curr.theta;
+          break;
+      }
+
+      float angleError = getAngleError(targetHeading, curr.theta);
+
+      if (params.earlyExitRange > 0.0f && distToEnd <= params.earlyExitRange)
+        break;
+
+      bool settledPos   = distToEnd        < params.exitRange;
+      bool settledAngle = std::abs(angleError) < 2.0f;
+
+      if (settledPos && settledAngle) {
+        if (settleStart == 0) settleStart = pros::millis();
+        if (pros::millis() - settleStart >= settleTime) break;
+      } else {
+        if (distToEnd > params.exitRange * 1.5f || std::abs(angleError) > 4.0f)
+          settleStart = 0;
+      }
+
+      if (pathProgress > lastProgress + 0.5f) {
+        lastProgress     = pathProgress;
+        lastProgressTime = pros::millis();
+      }
+      if (pros::millis() - lastProgressTime > stallTimeout &&
+          distToEnd > params.exitRange) {
+        std::cout << "[followPathPID] Stall detected, aborting." << std::endl;
+        break;
+      }
+
+      forwardPID.setGains(ySched.getGains(localForward));
+      strafePID .setGains(xSched.getGains(localStrafe));
+      thetaPID  .setGains(thetaSched.getGains(angleError));
+
+      float forward = static_cast<float>(forwardPID.update(localForward));
+      float strafe  = static_cast<float>(strafePID .update(localStrafe));
+      float turn    = static_cast<float>(thetaPID  .update(angleError));
+
+      float translationalMag = std::hypot(forward, strafe);
+
+      if (translationalMag > params.maxTranslationSpeed) {
+        float scale = params.maxTranslationSpeed / translationalMag;
+        forward *= scale;
+        strafe  *= scale;
+      }
+
+      if (translationalMag > 1e-3f &&
+          translationalMag < params.minSpeed &&
+          distToEnd > params.exitRange) {
+        float scale = params.minSpeed / translationalMag;
+        forward *= scale;
+        strafe  *= scale;
+      }
+
+      turn = std::clamp(turn, -params.maxRotationSpeed, params.maxRotationSpeed);
+
+      float total = std::abs(forward) + std::abs(strafe) + std::abs(turn);
+      if (total > params.maxTranslationSpeed) {
+        float scale = params.maxTranslationSpeed / total;
+        forward *= scale;
+        strafe  *= scale;
+        turn    *= scale;
+      }
+
+      setMotorVoltages(calculateHolonomic(strafe, forward, turn));
+      pros::delay(10);
+    }
+
+    brake();
+  }, params.async);
 }
 
 void Chassis::turnToHeading(float targetDeg, MoveParams params) {
@@ -1744,3 +1664,6 @@ void Chassis::autoTunePID(TuneTarget target, float dist, int maxCycles) {
   AutoTuner::run(this, target, config);
 }
 
+void Chassis::setMoveParams(MoveParams params) {
+  this->defaultParams = params;
+}

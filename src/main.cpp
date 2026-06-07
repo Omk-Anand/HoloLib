@@ -8,19 +8,19 @@ std::vector<LiftMotorConfig> lift_motor_configs = {{18, pros::MotorGear::blue},
                                                    {19, pros::MotorGear::blue}};
 
 pros::Controller master(pros::E_CONTROLLER_MASTER);
-pros::Motor frontl(2, pros::MotorGear::blue);
-pros::Motor frontr(-3, pros::MotorGear::blue);
-pros::Motor backl(1, pros::MotorGear::blue);
-pros::Motor backr(-4, pros::MotorGear::blue);
-pros::Imu imu(20);
+pros::Motor frontl(-3, pros::MotorGear::blue);
+pros::Motor frontr(2, pros::MotorGear::blue);
+pros::Motor backl(-4, pros::MotorGear::blue);
+pros::Motor backr(1, pros::MotorGear::blue);
+pros::Imu imu(10);
 
 Chassis chassis(frontl, frontr, backl, backr, imu,
-                {.trackWidth = 13,
-                 .drivetrainWidth = 12,
-                 .drivetrainLength = 13.25,
-                 .wheelDiameter = 4.05,
-                 .gearRatio = 1,
-                 .kfEnabled = false});
+                {
+                 .drivetrainWidth = 9.1,
+                 .drivetrainLength = 10.25,
+                 .wheelDiameter = 4.04,
+                 .gearRatio = 0.5,
+                 .kfEnabled = true});
 
 LiftConfig my_lift_config = {.gear_ratio = 12.0f / 84.0f,
                              .arm_length = 15.0f,
@@ -74,11 +74,6 @@ void disabled() {
 void competition_initialize() {}
 
 
-
-
-
-
-
  
 void simulation() {
   chassis.setPose(-24, 0, 90);
@@ -91,72 +86,80 @@ void simulation() {
 }
 
 void autonomous() {
-  
+  /*
+    chassis.setPose(0,0,0);
+    chassis.moveToPose(25, 0, 90, {.minSpeed = 65, .earlyExitRange = 7});
+    chassis.moveToPose(35, 25, 180, {});
+    */
 
-
-
-
-
-
- 
-  std::string path = R"(39.534, 25.961, 94.718
-39.49, 23.962, 94.718
-39.393, 21.965, 94.108
-39.233, 19.971, 93.504
-38.999, 17.985, 93.504
-38.668, 16.013, 92.936
-38.254, 14.057, 92.438
-37.752, 12.121, 92.047
-37.157, 10.213, 91.795
-36.465, 8.337, 91.709
-35.676, 6.5, 91.801
-34.792, 4.707, 92.072
-33.816, 2.962, 92.511
-32.755, 1.267, 93.093
-31.616, -0.377, 93.791
-30.409, -1.971, 94.573
-29.144, -3.519, 95.41
-27.829, -5.026, 96.275
-26.474, -6.497, 97.149
-25.089, -7.94, 98.014
-23.682, -9.362, 98.858
-22.262, -10.769, 99.672
-20.835, -12.171, 99.549
-19.409, -13.573, 98.811
-17.99, -14.983, 98.12
-16.586, -16.407, 97.48
-15.202, -17.85, 96.897
-13.843, -19.318, 95.437
-12.515, -20.813, 92.738
-11.222, -22.339, 89.957
-9.97, -23.898, 87.088
-8.761, -25.491, 84.121
-7.605, -27.124, 81.045
-6.503, -28.793, 77.849
-5.455, -30.495, 74.515
-4.46, -32.23, 71.025
-3.518, -33.994, 67.355
-2.632, -35.787, 63.472
-1.817, -37.613, 59.335
-1.054, -39.461, 54.889
-0.338, -41.328, 50.049
--0.317, -43.218, 44.686
--0.911, -45.128, 38.587
--1.468, -47.048, 31.321
--1.967, -48.985, 21.749
--2.401, -50.796, 270
-)";
-
-  chassis.addObstacle(0, 0, 5.5);
-  chassis.setAvoidanceMode(Chassis::AvoidanceMode::On);
-  chassis.setAvoidanceParams(7, 10);
-  chassis.setPose(-24, 24, 180);
-  chassis.moveToPoint(24, -24, {}, true);
+  std::string path = R"(
+0, 0, 84.915
+0.099, 1.997, 83.594
+0.389, 3.974, 82.484
+0.881, 5.911, 81.675
+1.58, 7.783, 81.228
+2.517, 9.548, 81.487
+3.647, 11.196, 82.124
+4.952, 12.709, 84.053
+6.424, 14.062, 85.181
+8.012, 15.275, 86.325
+9.703, 16.341, 88.485
+11.477, 17.264, 89.447
+13.307, 18.068, 90.314
+15.184, 18.758, 91.76
+17.101, 19.329, 92.346
+19.043, 19.805, 92.847
+21.005, 20.192, 93.271
+22.981, 20.496, 93.623
+24.969, 20.714, 93.313
+26.964, 20.854, 90.55
+28.962, 20.922, 87.7
+30.962, 20.921, 84.755
+32.961, 20.85, 81.703
+34.955, 20.702, 78.533
+36.943, 20.483, 75.23
+38.922, 20.192, 71.774
+40.886, 19.82, 68.144
+42.832, 19.358, 64.309
+44.754, 18.805, 60.231
+46.635, 18.127, 55.856
+48.463, 17.318, 51.109
+49.065, 15.431, 45.923
+49.52, 13.484, 40.013
+49.807, 11.506, 33.067
+49.731, 9.515, 24.233
+48.757, 7.83, 20
+46.852, 7.379, 48.246
+44.887, 7.725, 77.881
+42.997, 8.378, 89.682
+41.159, 9.165, 94.96
+39.353, 10.024, 95.053
+37.569, 10.928, 92.343
+35.798, 11.857, 89.55
+34.033, 12.798, 86.667
+32.27, 13.742, 83.685
+30.505, 14.683, 80.592
+28.734, 15.613, 77.377
+26.954, 16.524, 74.021
+25.162, 17.413, 70.506
+23.356, 18.271, 66.807
+21.533, 19.093, 62.89
+19.689, 19.868, 58.713
+17.824, 20.589, 54.215
+15.934, 21.243, 49.309
+14.017, 21.811, 43.857
+12.07, 22.269, 37.623
+10.099, 22.6, 30.129
+8.108, 22.777, 20
+7.352, 22.799, 0
+  )";
+  chassis.setPose(0,0,0);
+  chassis.followPathPID(parsePathData(path), 7, {}, Chassis::HeadingMode::FollowPath, 0, false);
 }
 
 void opcontrol() {
   chassis.setPose(0, 0, 90);
-  chassis.setEKFstate(false);
+  chassis.setEKFstate(true);
   DriveCurve movement_curve{
       .curve_multipler = 1.01, .deadzone = 5, .minimum_output = 5};
   DriveCurve rotation_curve{

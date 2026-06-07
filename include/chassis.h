@@ -70,8 +70,8 @@ private:
   Eigen::Matrix3f P;
   Eigen::Matrix<float, 1, 3> H;
   float measurementNoise;
-  float xProcessNoise = 0.001f, yProcessNoise = 0.001f,
-        thetaProcessNoise = 0.003f;
+  float xProcessNoise = 0.01f, yProcessNoise = 0.01f,
+        thetaProcessNoise = 0.001f;
 
 public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -88,7 +88,7 @@ public:
     x << initial_x, initial_y, initial_theta;
     P.setZero();
     H << 0, 0, 1;
-    measurementNoise = 0.0001f;
+    measurementNoise = 0.00005f;
   }
 
   void predict(float dx_local, float dy_local, float dtheta) {
@@ -259,7 +259,7 @@ struct XDriveVoltages {
 };
 
 struct ChassisConfig {
-  float trackWidth;
+  float trackWidth = 0;
   float drivetrainWidth = 0.0f;
   float drivetrainLength = 0.0f;
   float wheelDiameter;
@@ -289,7 +289,7 @@ struct MoveParams {
   float maxTranslationSpeed = 127.0f;
   float maxRotationSpeed = 127.0f;
   float minSpeed = 0.0f;
-  float exitRange = 2.0f;
+  float exitRange = 0.5f;
   float earlyExitRange = 0.0f;
   uint32_t timeout = 5000;
   bool async = true;
@@ -363,30 +363,30 @@ public:
   enum class AvoidanceMode { Off, On };
 
   void followPathPID(const std::vector<PathPoint> &path, float lookahead_inches,
-                     MoveParams params = {},
+                     MoveParams params = defaultParams,
                      HeadingMode headingMode = HeadingMode::FollowPath,
                      float holdAngleDeg = 0.0f, bool reversed = false);
 
-  void turnToHeading(float targetDeg, MoveParams params = {});
+  void turnToHeading(float targetDeg, MoveParams params = defaultParams);
 
-  void turnToPoint(float tx, float ty, MoveParams params = {});
+  void turnToPoint(float tx, float ty, MoveParams params = defaultParams);
 
-  void moveToPoint(float tx, float ty, MoveParams params = {},
+  void moveToPoint(float tx, float ty, MoveParams params = defaultParams,
                    bool angleCorrection = true);
 
-  void moveRelative(float forward, float sideways, MoveParams params = {},
+  void moveRelative(float forward, float sideways, MoveParams params = defaultParams,
                     bool holdHeading = true);
 
   void moveDistance(float distance, MoveParams params = {},
                     bool holdHeading = true);
 
-  void strafeDistance(float distance, MoveParams params = {},
+  void strafeDistance(float distance, MoveParams params = defaultParams,
                       bool holdHeading = true);
 
   void moveToPose(float tx, float ty, float targetThetaDeg,
-                  MoveParams params = {});
+                  MoveParams params = defaultParams);
 
-  void curveCircle(float targetThetaDeg, float radius, MoveParams params = {},
+  void curveCircle(float targetThetaDeg, float radius, MoveParams params = defaultParams,
                    CurveDirection direction = CurveDirection::Auto);
 
   void waitUntilDone();
@@ -429,15 +429,17 @@ public:
   void clearTrackingWheels();
 
   template <typename F>
-  void move(F updateFunction, MoveParams params = {}, bool fieldCentric = true,
+  void move(F updateFunction, MoveParams params = defaultParams, bool fieldCentric = true,
             float headingOffset = 0.0f, DriveCorrection correction = {}) {}
+
+  void setMoveParams(MoveParams params);
 
 private:
   pros::Motor frontLeft, frontRight, backLeft, backRight;
   std::vector<pros::Motor> motors{frontLeft, frontRight, backLeft, backRight};
   pros::Imu imu;
   ChassisConfig config;
-
+  static MoveParams defaultParams;
   GainScheduler xSched, ySched, thetaSched;
 
   Pose currentPose{0, 0, 0};
