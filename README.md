@@ -12,11 +12,13 @@ Traditional odometry suffers from wheel slippage, sensor noise, and cumulative d
 - Dedicated tracking wheels (supporting customizable vertical and horizontal layouts).
 - Chassis motor encoders.
 The EKF predicts state updates through holonomic kinematics and corrects them using sensor measurement models in real-time, keeping your coordinate tracking accurate.
+**It is not recommended to use the Pose EKF if you do not understand how to tune or manage it.**
 
 ### 2. Intelligent Obstacle Avoidance
 Navigate around preplanned obstacles.  HoloLib features two advanced path-planning and obstacle avoidance modes:
 - **Recursive Waypoint Generation:** Automatically detects path intersections with predefined circular obstacles and recursively calculates safe bypass waypoints.
 - **Artificial Potential Fields (APF):** Models the target coordinate as an attractive force and obstacles as repulsive forces, generating real time bypass vectors. It features tangential bypass force scaling to elegantly "glide" around obstacles without stopping.
+**This feature is mainly used as a system for avoiding unplanned crashes, may require more tuning for dynamic autonomous routines**
 
 ### 3. Dynamic Gain Scheduling
 No single PID tuning configuration is perfect for both long-distance travels and micro adjustments. HoloLib's `GainScheduler` allows you to define multiple steps of PID gains. The chassis automatically scales and transitions its C++ PID controllers (`kP`, `kI`, `kD`, and `slew` rate) depending on the error magnitude, ensuring high acceleration at distance and zero overshoot settling at the target.
@@ -30,8 +32,8 @@ Control your X-Drive robot easily with native coordinate transformations:
 - **Precision Motions:** Built-in support for relative movements, turn-to-point, turn-to-heading, circle curves, and single-side swing turns.
 
 ### 5. Driver Replay System
-Log driver actions during practice runs and replay them with absolute precision during the autonomous period. The logger tracks joystick inputs and EKF positions, while the replay engine reconstructs driver movements, giving you a repeatable autonomous macro system.
-
+Log driver actions during practice runs and replay them during the autonomous period. The logger EKF positions, while the replay engine reconstructs driver movements, giving you a repeatable autonomous macro system.
+**Currently the replay system only logs positions and velocities, joystick mapping iws not enabled as to avoid buffer**
 ---
 
 ## Project Structure
@@ -148,3 +150,4 @@ HoloLib comes with a built-in Python autonomous path simulation tool. To design 
 
 If you are going to use HoloLib on your robot, please make sure to abide by the rules of the Apache 2.0 license.
 Also this is a one man project, so help and pull requests are highly encouraged.
+
