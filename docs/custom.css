@@ -89,10 +89,19 @@ html.dark-mode #top {
     text-shadow: none;
 }
 
-/* Search box on the gradient header */
+/* Search box in the sidebar: give it room above and below so it doesn't clip
+   the title area above or the first nav-tree entry below. */
 #MSearchBox {
     box-shadow: none;
     border: 1px solid rgba(255, 255, 255, 0.35);
+    margin-top: 10px;
+    margin-bottom: 12px;
+}
+
+/* Push the nav tree clear of the search box so the (selected) first item
+   isn't tucked underneath it. */
+#side-nav #nav-tree {
+    padding-top: 10px;
 }
 
 /* ---- Headings ---------------------------------------------------------- */

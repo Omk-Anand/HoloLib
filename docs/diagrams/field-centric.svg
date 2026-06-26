@@ -49,8 +49,8 @@
   </g>
   <!-- field-forward motion arrow (not rotated with robot) -->
   <line x1="210" y1="170" x2="210" y2="100" stroke="#5b54e6" stroke-width="3.4" marker-end="url(#mv)"/>
-  <text class="lbl" x="210" y="246" text-anchor="middle">facing forward</text>
-  <text class="sub" x="210" y="264" text-anchor="middle">stick &#8593; &#8594; field-forward</text>
+  <text class="lbl" x="210" y="286" text-anchor="middle">facing forward</text>
+  <text class="sub" x="210" y="306" text-anchor="middle">stick &#8593; &#8594; field-forward</text>
 
   <!-- Robot B: heading turned -->
   <g transform="translate(450,196) rotate(-48)">
@@ -65,6 +65,6 @@
   </g>
   <!-- same field-forward motion arrow -->
   <line x1="450" y1="170" x2="450" y2="100" stroke="#5b54e6" stroke-width="3.4" marker-end="url(#mv)"/>
-  <text class="lbl" x="450" y="246" text-anchor="middle">turned 48&#176;</text>
-  <text class="sub" x="450" y="264" text-anchor="middle">stick &#8593; &#8594; field-forward</text>
+  <text class="lbl" x="450" y="286" text-anchor="middle">turned 48&#176;</text>
+  <text class="sub" x="450" y="306" text-anchor="middle">stick &#8593; &#8594; field-forward</text>
 </svg>
