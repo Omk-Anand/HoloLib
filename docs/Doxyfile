@@ -64,7 +64,9 @@ INPUT                  = ../README.md \
 USE_MDFILE_AS_MAINPAGE = ../README.md
 RECURSIVE              = NO
 FILE_PATTERNS          = *.h *.hpp *.md
-IMAGE_PATH             = .
+# `..` lets README image links written as `docs/diagrams/*.svg` (which also work
+# on GitHub) resolve from the repo root; `diagrams` covers basename lookups.
+IMAGE_PATH             = . .. diagrams
 
 #---------------------------------------------------------------------------
 # Source browser
