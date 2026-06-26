@@ -15,3 +15,12 @@ temp.log
 temp.errors
 *.ini
 .d/
+
+# Doxygen documentation (generated output + CI-fetched theme assets)
+docs/build/
+docs/html/
+docs/header.html
+docs/footer.html
+docs/style.css
+docs/doxygen-awesome*.css
+docs/doxygen-awesome*.js

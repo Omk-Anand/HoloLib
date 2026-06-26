@@ -1,0 +1,145 @@
+/* ===========================================================================
+   HoloLib documentation theme
+   Brand layer on top of doxygen-awesome-css. Tuned for a clean, modern,
+   "holographic" indigo/violet identity with a refined dark mode.
+   =========================================================================== */
+
+html {
+    /* Brand palette ------------------------------------------------------- */
+    --primary-color:          #5b54e6;
+    --primary-dark-color:     #4640c4;
+    --primary-light-color:    #8b86f0;
+    --primary-lighter-color:  #e7e6fb;
+    --primary-lightest-color: #f4f4fe;
+
+    /* Typography ---------------------------------------------------------- */
+    --page-font-size: 15.6px;
+    --navigation-font-size: 14.5px;
+    --toc-font-size: 13.4px;
+    --code-font-size: 14px;
+    --content-maxwidth: 1180px;
+
+    /* Shape & spacing ----------------------------------------------------- */
+    --border-radius-large: 12px;
+    --border-radius-small: 7px;
+    --border-radius-medium: 9px;
+    --spacing-large: 14px;
+    --spacing-medium: 11px;
+
+    /* Header -------------------------------------------------------------- */
+    --header-foreground: #ffffff;
+    --searchbar-background: rgba(255, 255, 255, 0.92);
+    --searchbar-border-radius: 8px;
+
+    /* Misc ---------------------------------------------------------------- */
+    --side-nav-background: #f7f7fb;
+    --odd-color: #fafaff;
+}
+
+html.dark-mode {
+    --primary-color:          #9a95ff;
+    --primary-dark-color:     #b6b2ff;
+    --primary-light-color:    #6f6ad6;
+    --primary-lighter-color:  #2a2950;
+    --primary-lightest-color: #20203c;
+
+    --page-background-color: #15151f;
+    --side-nav-background: #1b1b29;
+    --header-foreground: #ffffff;
+    --searchbar-background: rgba(255, 255, 255, 0.08);
+    --odd-color: #1a1a26;
+    --separator-color: #2c2c40;
+}
+
+/* ---- Gradient header bar (the HoloLib signature) ----------------------- */
+#top {
+    background: linear-gradient(120deg, #4640c4 0%, #5b54e6 45%, #8b6cf0 100%);
+    box-shadow: 0 2px 14px rgba(70, 64, 196, 0.28);
+    border-bottom: none;
+}
+html.dark-mode #top {
+    background: linear-gradient(120deg, #1f1d4a 0%, #322c8c 50%, #4b3a96 100%);
+    box-shadow: 0 2px 14px rgba(0, 0, 0, 0.45);
+}
+
+#titlearea {
+    background: transparent;
+    border-bottom: none;
+}
+
+#projectname {
+    color: var(--header-foreground);
+    font-weight: 700;
+    letter-spacing: -0.5px;
+}
+#projectbrief {
+    color: rgba(255, 255, 255, 0.82);
+    font-weight: 400;
+}
+
+/* Main menu sits on the gradient -> make it readable */
+#main-menu > li > a {
+    color: rgba(255, 255, 255, 0.88) !important;
+    font-weight: 500;
+}
+#main-menu > li > a:hover {
+    color: #ffffff !important;
+}
+.sm-dox a, .sm-dox a:focus, .sm-dox a:hover, .sm-dox a:active {
+    text-shadow: none;
+}
+
+/* Search box on the gradient header */
+#MSearchBox {
+    box-shadow: none;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+}
+
+/* ---- Headings ---------------------------------------------------------- */
+h1, h2, h3, h4, h5 { letter-spacing: -0.3px; }
+h1.groupheader, h2.groupheader {
+    border-bottom: 2px solid var(--primary-lighter-color);
+    color: var(--primary-dark-color);
+}
+
+/* ---- Landing page hero (the README title block) ------------------------ */
+div.contents .textblock > h1:first-child,
+.title {
+    font-weight: 800;
+}
+
+/* ---- Cards / panels ---------------------------------------------------- */
+.memtitle {
+    background: var(--primary-lightest-color);
+    border-color: var(--primary-lighter-color);
+}
+table.memberdecls .heading {
+    background: transparent;
+}
+
+/* ---- Code blocks ------------------------------------------------------- */
+div.fragment, pre.fragment {
+    border-radius: var(--border-radius-medium);
+    border-left: 4px solid var(--primary-color);
+}
+
+/* ---- Links ------------------------------------------------------------- */
+a { font-weight: 500; }
+
+/* ---- Sidebar nav active state ------------------------------------------ */
+#nav-tree .selected {
+    background-image: none;
+    background-color: var(--primary-color);
+    border-radius: 6px;
+    text-shadow: none;
+}
+#nav-tree .selected a { color: #ffffff !important; }
+
+/* ---- Footer ------------------------------------------------------------ */
+.footer {
+    opacity: 0.7;
+    font-size: 12.5px;
+}
+
+/* ---- Tables ------------------------------------------------------------ */
+.directory tr.even { background-color: var(--odd-color); }

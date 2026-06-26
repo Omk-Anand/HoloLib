@@ -3,46 +3,67 @@ name: Build Documentation
 on:
   push:
     branches: ["main"]
+  workflow_dispatch:
 
 permissions:
   contents: read
   pages: write
   id-token: write
 
+# Allow one concurrent deployment; don't cancel an in-progress one.
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Install Doxygen
-        run: sudo apt-get update && sudo apt-get install -y doxygen
+      - name: Install Doxygen + Graphviz
+        run: sudo apt-get update && sudo apt-get install -y doxygen graphviz
 
-      - name: Download Doxygen Awesome Theme
-        run: wget https://raw.githubusercontent.com/jothepro/doxygen-awesome-css/main/doxygen-awesome.css
-
-      - name: Configure Doxygen
+      - name: Download Doxygen Awesome theme
+        working-directory: docs
         run: |
-          doxygen -g
-          sed -i 's/PROJECT_NAME           = "My Project"/PROJECT_NAME           = "HoloLib"/g' Doxyfile
-          sed -i 's/INPUT                  =/INPUT                  = include/g' Doxyfile
-          sed -i 's/RECURSIVE              = NO/RECURSIVE              = YES/g' Doxyfile
-          # EXCLUDE THIRD-PARTY DEPENDENCIES
-          sed -i 's|EXCLUDE_PATTERNS      =|EXCLUDE_PATTERNS      = */Eigen/* */pros/* */okapi/*|g' Doxyfile
-          sed -i 's/GENERATE_HTML          = NO/GENERATE_HTML          = YES/g' Doxyfile
-          sed -i 's/GENERATE_LATEX         = YES/GENERATE_LATEX         = NO/g' Doxyfile
-          sed -i 's/GENERATE_TREEVIEW      = NO/GENERATE_TREEVIEW      = YES/g' Doxyfile
-          sed -i 's/HTML_EXTRA_STYLESHEET  =/HTML_EXTRA_STYLESHEET  = doxygen-awesome.css/g' Doxyfile
+          DA_VERSION=v2.3.4
+          BASE=https://raw.githubusercontent.com/jothepro/doxygen-awesome-css/$DA_VERSION
+          for f in \
+            doxygen-awesome.css \
+            doxygen-awesome-sidebar-only.css \
+            doxygen-awesome-sidebar-only-darkmode-toggle.css \
+            doxygen-awesome-darkmode-toggle.js \
+            doxygen-awesome-fragment-copy-button.js \
+            doxygen-awesome-paragraph-link.js \
+            doxygen-awesome-interactive-toc.js \
+            doxygen-awesome-tabs.js; do
+            wget -q "$BASE/$f"
+          done
 
-      - name: Run Doxygen
+      - name: Generate and patch header/footer
+        working-directory: docs
+        run: |
+          doxygen -w html header.html footer.html style.css Doxyfile
+          python3 patch_header.py
+
+      - name: Build documentation
+        working-directory: docs
         run: doxygen Doxyfile
 
-      - name: Upload Artifact
+      - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: 'html'
+          path: docs/build/html
 
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
