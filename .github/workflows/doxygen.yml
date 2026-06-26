@@ -52,10 +52,19 @@ jobs:
         working-directory: docs
         run: doxygen Doxyfile
 
+      - name: Assemble Pages site (landing page at root, docs under /docs)
+        run: |
+          rm -rf public
+          mkdir -p public/docs public/assets/diagrams
+          cp -r docs/build/html/. public/docs/
+          cp docs/landing/index.html public/index.html
+          cp docs/diagrams/*.svg public/assets/diagrams/
+          touch public/.nojekyll
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: docs/build/html
+          path: public
 
   deploy:
     needs: build
