@@ -1,14 +1,30 @@
 #include "motion_handler.h"
 
+/**
+ *@brief The task that runs the motion handler loop.
+ *@param param The motion handler to run the task for.
+ *@return void
+ */
 void motionHandlerTask(void *param) {
   static_cast<MotionHandler *>(param)->loop();
 }
 
+/**
+ *@brief Constructor for the motion handler.
+ *@return void
+ */
 MotionHandler::MotionHandler()
-    : lastEnqueuedId(0), currentRunningId(0), onMotionStartCallback(nullptr), running(false) {
+    : lastEnqueuedId(0), currentRunningId(0), onMotionStartCallback(nullptr),
+      running(false) {
   task = new pros::Task(motionHandlerTask, this, "Motion Handler Task");
 }
 
+/**
+ *@brief Enqueues a motion to be executed.
+ *@param motion The motion to enqueue.
+ *@param async Whether the motion should be executed asynchronously.
+ *@return void
+ */
 void MotionHandler::enqueue(std::function<void()> motion, bool async) {
   auto done = std::make_shared<bool>(false);
 
@@ -18,7 +34,7 @@ void MotionHandler::enqueue(std::function<void()> motion, bool async) {
     motion();
     mutex.take();
     if (running) {
-       *done = true;
+      *done = true;
     }
     mutex.give();
   });
@@ -31,6 +47,10 @@ void MotionHandler::enqueue(std::function<void()> motion, bool async) {
   }
 }
 
+/**
+ *@brief Cancels the current motion.
+ *@return void
+ */
 void MotionHandler::cancelMotion() {
   mutex.take();
   if (task != nullptr) {
@@ -50,6 +70,10 @@ void MotionHandler::cancelMotion() {
   mutex.give();
 }
 
+/**
+ *@brief Cancels all motions.
+ *@return void
+ */
 void MotionHandler::cancelAll() {
   mutex.take();
   if (task != nullptr) {
@@ -69,6 +93,10 @@ void MotionHandler::cancelAll() {
   mutex.give();
 }
 
+/**
+ *@brief Waits until all motions are done.
+ *@return void
+ */
 void MotionHandler::waitUntilDone() {
   while (true) {
     mutex.take();
@@ -81,6 +109,10 @@ void MotionHandler::waitUntilDone() {
   }
 }
 
+/**
+ *@brief The main loop of the motion handler.
+ *@return void
+ */
 void MotionHandler::loop() {
   while (true) {
     std::function<void()> currentMotion = nullptr;
@@ -114,6 +146,10 @@ void MotionHandler::loop() {
   }
 }
 
+/**
+ *@brief Checks if the motion handler is in motion.
+ *@return bool True if the motion handler is in motion.
+ */
 bool MotionHandler::isInMotion() {
   mutex.take();
   bool inMotion = running || !queue.empty();

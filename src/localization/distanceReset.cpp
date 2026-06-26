@@ -4,6 +4,14 @@
 #include <iostream>
 #include <numeric>
 
+/**
+ *@brief Calculates the global position of the robot.
+ *@param active_sensors The active distance sensors.
+ *@param heading_deg The heading of the robot in degrees.
+ *@param current_x The current x position of the robot.
+ *@param current_y The current y position of the robot.
+ *@return The global position of the robot.
+ */
 distancePose DistanceReset::calculateGlobalPosition(
     const std::vector<DistanceSensor> &active_sensors, double heading_deg,
     double current_x, double current_y) {
@@ -82,6 +90,13 @@ distancePose DistanceReset::calculateGlobalPosition(
   return {est_x, est_y, using_odom_x, using_odom_y};
 }
 
+/**
+ *@brief Constructor for the distance reset.
+ *@param robot_chassis The chassis of the robot.
+ *@param robot_sensors The distance sensors of the robot.
+ *@param heading_tolerance The heading tolerance for the distance reset.
+ *@param filter_range The filter range for the distance reset.
+ */
 DistanceReset::DistanceReset(Chassis *robot_chassis,
                              const std::vector<DistanceSensor> &robot_sensors,
                              float heading_tolerance, float filter_range)
@@ -89,10 +104,23 @@ DistanceReset::DistanceReset(Chassis *robot_chassis,
       default_heading_tolerance(heading_tolerance),
       default_filter_range(filter_range) {}
 
+/**
+ *@brief Updates the global position of the robot.
+ *@param setPose Whether to set the pose of the robot.
+ *@param filter Whether to filter the pose of the robot.
+ *@return The global position of the robot.
+ */
 distancePose DistanceReset::update(bool setPose, bool filter) {
   return updateSpecific(sensors, setPose, filter);
 }
 
+/**
+ *@brief Updates the global position of the robot.
+ *@param use_flags The flags to use for the distance reset.
+ *@param setPose Whether to set the pose of the robot.
+ *@param filter Whether to filter the pose of the robot.
+ *@return The global position of the robot.
+ */
 distancePose DistanceReset::update(const std::vector<bool> &use_flags,
                                    bool setPose, bool filter) {
   std::vector<DistanceSensor> active_sensors;
@@ -103,6 +131,13 @@ distancePose DistanceReset::update(const std::vector<bool> &use_flags,
   return updateSpecific(active_sensors, setPose, filter);
 }
 
+/**
+ *@brief Updates the global position of the robot.
+ *@param active_sensors The active distance sensors.
+ *@param setPose Whether to set the pose of the robot.
+ *@param filter Whether to filter the pose of the robot.
+ *@return The global position of the robot.
+ */
 distancePose
 DistanceReset::updateSpecific(const std::vector<DistanceSensor> &active_sensors,
                               bool setPose, bool filter) {
