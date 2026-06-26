@@ -31,6 +31,13 @@ html {
     --searchbar-background: rgba(255, 255, 255, 0.92);
     --searchbar-border-radius: 8px;
 
+    /* Sidebar-only layout pins the title block (#top) to a fixed height with
+       overflow:hidden, and the nav tree starts directly below it. The default
+       120px is too short once the project brief wraps to two lines, which
+       clips the search box and lets the first nav entry overlap it. Give the
+       header enough room for title + 2-line brief + search box. */
+    --top-height: 166px;
+
     /* Misc ---------------------------------------------------------------- */
     --side-nav-background: #f7f7fb;
     --odd-color: #fafaff;
@@ -89,19 +96,10 @@ html.dark-mode #top {
     text-shadow: none;
 }
 
-/* Search box in the sidebar: give it room above and below so it doesn't clip
-   the title area above or the first nav-tree entry below. */
+/* Search box on the gradient header */
 #MSearchBox {
     box-shadow: none;
     border: 1px solid rgba(255, 255, 255, 0.35);
-    margin-top: 10px;
-    margin-bottom: 12px;
-}
-
-/* Push the nav tree clear of the search box so the (selected) first item
-   isn't tucked underneath it. */
-#side-nav #nav-tree {
-    padding-top: 10px;
 }
 
 /* ---- Headings ---------------------------------------------------------- */
@@ -252,4 +250,160 @@ div.contents table.markdownTable tr:nth-child(even) td {
 }
 html.dark-mode div.contents table.markdownTable td {
     border-top-color: var(--separator-color);
+}
+
+/* ===========================================================================
+   Motion & polish layer
+   On-brand micro-interactions and animations. Everything here is purely
+   cosmetic and is fully disabled under `prefers-reduced-motion` (see the
+   bottom of this file), so it never gets in the way of reading or a11y.
+   =========================================================================== */
+
+/* ---- Keyframes --------------------------------------------------------- */
+@keyframes holo-gradient-pan {
+    0%   { background-position:   0% 50%; }
+    50%  { background-position: 100% 50%; }
+    100% { background-position:   0% 50%; }
+}
+@keyframes holo-fade-up {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes holo-sheen {
+    0%   { transform: translateX(-120%) skewX(-18deg); }
+    100% { transform: translateX(220%)  skewX(-18deg); }
+}
+
+/* ---- Living gradient header -------------------------------------------- */
+/* Stretch the gradient and pan it slowly so the header feels "holographic". */
+#top {
+    background-size: 200% 200%;
+    animation: holo-gradient-pan 18s ease infinite;
+    position: relative;
+    overflow: hidden;
+}
+/* A soft light sheen that sweeps across the header once on load. */
+#top::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 45%;
+    height: 100%;
+    pointer-events: none;
+    background: linear-gradient(
+        100deg,
+        rgba(255, 255, 255, 0) 0%,
+        rgba(255, 255, 255, 0.18) 50%,
+        rgba(255, 255, 255, 0) 100%);
+    animation: holo-sheen 2.6s ease-out 0.4s 1;
+}
+
+/* ---- Page content entrance --------------------------------------------- */
+/* The main page fades up gently on first paint. */
+div.contents {
+    animation: holo-fade-up 0.5s ease both;
+}
+
+/* ---- Links: animated underline ----------------------------------------- */
+div.contents p a,
+div.contents li a {
+    background-image: linear-gradient(var(--primary-color), var(--primary-color));
+    background-size: 0% 2px;
+    background-position: 0 100%;
+    background-repeat: no-repeat;
+    transition: background-size 0.25s ease, color 0.2s ease;
+    text-decoration: none;
+}
+div.contents p a:hover,
+div.contents li a:hover {
+    background-size: 100% 2px;
+}
+
+/* ---- Search box focus glow --------------------------------------------- */
+#MSearchBox {
+    transition: box-shadow 0.25s ease, border-color 0.25s ease;
+}
+#MSearchBox:focus-within,
+#MSearchBox.MSearchBoxActive {
+    border-color: rgba(255, 255, 255, 0.85);
+    box-shadow: 0 0 0 3px rgba(155, 149, 255, 0.35);
+}
+
+/* ---- Nav tree: slide-in highlight on hover ----------------------------- */
+#nav-tree a {
+    transition: color 0.18s ease, transform 0.18s ease;
+}
+#nav-tree .item:hover {
+    transform: translateX(3px);
+}
+#nav-tree .selected {
+    transition: background-color 0.2s ease;
+}
+
+/* ---- Code blocks: lift on hover ---------------------------------------- */
+div.fragment,
+pre.fragment {
+    transition: box-shadow 0.25s ease, border-left-color 0.25s ease,
+                transform 0.25s ease;
+}
+div.fragment:hover,
+pre.fragment:hover {
+    box-shadow: 0 6px 22px rgba(70, 64, 196, 0.16);
+    border-left-color: var(--primary-light-color);
+    transform: translateY(-2px);
+}
+
+/* ---- Callouts (blockquotes): hover emphasis ---------------------------- */
+div.contents blockquote {
+    transition: box-shadow 0.25s ease, transform 0.25s ease;
+}
+div.contents blockquote:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(230, 162, 60, 0.18);
+}
+
+/* ---- Figures: gentle zoom on hover ------------------------------------- */
+div.contents div.image img {
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+div.contents div.image img:hover {
+    transform: scale(1.015);
+    box-shadow: 0 10px 30px rgba(70, 64, 196, 0.20);
+}
+
+/* ---- Tables: row hover -------------------------------------------------- */
+div.contents table.markdownTable td {
+    transition: background-color 0.18s ease;
+}
+div.contents table.markdownTable tr:hover td {
+    background: var(--primary-lighter-color);
+}
+
+/* ---- Member cards: lift ------------------------------------------------- */
+.memtitle {
+    transition: box-shadow 0.25s ease, transform 0.25s ease;
+}
+.memitem:hover .memtitle {
+    box-shadow: 0 5px 18px rgba(70, 64, 196, 0.14);
+    transform: translateY(-1px);
+}
+
+/* ---- Respect reduced-motion -------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    #top,
+    #top::after,
+    div.contents {
+        animation: none !important;
+        transition: none !important;
+    }
+    div.contents div.image img:hover,
+    div.fragment:hover,
+    pre.fragment:hover,
+    div.contents blockquote:hover,
+    #nav-tree .item:hover,
+    .memitem:hover .memtitle {
+        transform: none !important;
+    }
 }
