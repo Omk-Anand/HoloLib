@@ -37,9 +37,10 @@
 
   /* ---- scroll progress bar ------------------------------------------- */
   #progress {
-    position: fixed; top: 0; left: 0; height: 2px; width: 0%;
+    position: fixed; top: 0; left: 0; height: 2px; width: 100%;
+    transform: scaleX(0); transform-origin: 0 50%;
     background: linear-gradient(90deg, var(--brand-3), var(--brand-2));
-    z-index: 100; transition: width 0.1s linear;
+    z-index: 100; will-change: transform;
   }
 
   /* ---- top nav (fades in after hero) --------------------------------- */
@@ -54,8 +55,9 @@
                 backdrop-filter 0.35s var(--ease);
   }
   .nav.is-stuck {
-    background: rgba(11,11,18,0.72);
-    backdrop-filter: blur(14px) saturate(140%);
+    background: rgba(11,11,18,0.82);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     border-bottom: 1px solid var(--line);
   }
   .nav__brand { font-weight: 700; letter-spacing: -0.4px; font-size: 18px; }
@@ -86,10 +88,13 @@
       radial-gradient(40% 50% at 20% 25%, rgba(91,84,230,0.55), transparent 60%),
       radial-gradient(45% 55% at 80% 30%, rgba(180,108,240,0.45), transparent 62%),
       radial-gradient(50% 60% at 50% 90%, rgba(110,79,214,0.40), transparent 60%);
-    filter: blur(20px);
+    filter: blur(14px);
+    transform: translateZ(0);
     animation: drift 22s ease-in-out infinite alternate;
     will-change: transform;
   }
+  /* Stop animating the expensive blurred layer once the hero leaves view. */
+  .hero--idle .hero__gradient { animation-play-state: paused; }
   .hero__grid {
     position: absolute; inset: 0; z-index: -1; opacity: 0.5;
     background-image:
@@ -361,21 +366,29 @@
 (function () {
   "use strict";
   var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var docEl = document.documentElement;
 
-  // Scroll progress + sticky nav
+  // ---- Scroll progress + sticky nav (rAF-throttled, single listener) ----
   var bar = document.getElementById("progress");
   var nav = document.getElementById("nav");
+  var ticking = false;
+
+  function update() {
+    ticking = false;
+    var top = window.scrollY || docEl.scrollTop;
+    var max = docEl.scrollHeight - docEl.clientHeight;
+    bar.style.transform = "scaleX(" + (max > 0 ? top / max : 0) + ")";
+    if ((top > 80) !== nav.classList.contains("is-stuck")) {
+      nav.classList.toggle("is-stuck", top > 80);
+    }
+  }
   function onScroll() {
-    var h = document.documentElement;
-    var max = h.scrollHeight - h.clientHeight;
-    var p = max > 0 ? (h.scrollTop || document.body.scrollTop) / max : 0;
-    bar.style.width = (p * 100) + "%";
-    nav.classList.toggle("is-stuck", (h.scrollTop || document.body.scrollTop) > 80);
+    if (!ticking) { ticking = true; requestAnimationFrame(update); }
   }
   document.addEventListener("scroll", onScroll, { passive: true });
-  onScroll();
+  update();
 
-  // Reveal on scroll
+  // ---- Reveal on scroll ----
   if (!reduce && "IntersectionObserver" in window) {
     var io = new IntersectionObserver(function (entries) {
       entries.forEach(function (e) {
@@ -387,13 +400,13 @@
     document.querySelectorAll(".reveal").forEach(function (el) { el.classList.add("in"); });
   }
 
-  // Subtle parallax on the hero gradient
-  if (!reduce) {
-    var grad = document.querySelector(".hero__gradient");
-    document.addEventListener("scroll", function () {
-      var y = (window.scrollY || document.documentElement.scrollTop) * 0.15;
-      grad.style.transform = "translate3d(0," + y + "px,0)";
-    }, { passive: true });
+  // ---- Pause the heavy hero animation once it scrolls out of view ----
+  if ("IntersectionObserver" in window) {
+    var hero = document.getElementById("top");
+    var hio = new IntersectionObserver(function (entries) {
+      hero.classList.toggle("hero--idle", !entries[0].isIntersecting);
+    }, { threshold: 0 });
+    hio.observe(hero);
   }
 })();
 </script>
