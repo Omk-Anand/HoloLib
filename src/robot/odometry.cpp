@@ -171,12 +171,15 @@ void Chassis::odometryTask() {
 
       ekf.predict(dx_local, dy_local, d_theta_meas);
 
-      ekf.updateTrackingWheels(trackingWheelConfigs, measured_deltas, dx_local,
-                               dy_local, d_theta_meas, trackingWheelMeasNoise);
+      if (config.kfEnabled) {
+        ekf.updateTrackingWheels(trackingWheelConfigs, measured_deltas,
+                                 dx_local, dy_local, d_theta_meas,
+                                 trackingWheelMeasNoise);
 
-      float current_w = d_theta_meas / 0.01f;
-      float dynamic_R = measurementNoise + std::abs(current_w) * 0.005f;
-      ekf.updateIMU(current_heading_meas, dynamic_R);
+        float current_w = d_theta_meas / 0.01f;
+        float dynamic_R = measurementNoise + std::abs(current_w) * 0.005f;
+        ekf.updateIMU(current_heading_meas, dynamic_R);
+      }
 
       float step_dist = std::sqrt(dx_local * dx_local + dy_local * dy_local);
       motionDistTraveled += step_dist;
@@ -213,9 +216,11 @@ void Chassis::odometryTask() {
       poseMutex.take();
       ekf.predict(local_delta.x(), local_delta.y(), d_theta_wheels);
 
-      float current_w = d_theta_meas / 0.01f;
-      float dynamic_R = measurementNoise + std::abs(current_w) * 0.005f;
-      ekf.updateIMU(current_heading_meas, dynamic_R);
+      if (config.kfEnabled) {
+        float current_w = d_theta_meas / 0.01f;
+        float dynamic_R = measurementNoise + std::abs(current_w) * 0.005f;
+        ekf.updateIMU(current_heading_meas, dynamic_R);
+      }
 
       float step_dist = local_delta.norm();
       motionDistTraveled += step_dist;

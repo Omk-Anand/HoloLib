@@ -262,6 +262,16 @@ void Chassis::setAvoidanceParams(float safetyMargin, float clearance) {
 }
 
 /**
+ *@brief Sets the robot dimensions used for obstacle avoidance.
+ *@param width The width of the robot (from wheel to wheel) in inches.
+ *@param height The length of the robot (from wheel to wheel) in inches.
+ *@return void
+ */
+void Chassis::setRobotDimensionsAvoidance(float width, float height) {
+  obstacles.setRobotDimensions(width, height);
+}
+
+/**
  *@brief Sets the potential field parameters.
  *@param ka The attractive gain.
  *@param kr The repulsive gain.

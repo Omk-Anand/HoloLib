@@ -24,6 +24,10 @@ void Chassis::calibrate() {
   prev_fl = 0, prev_fr = 0, prev_bl = 0, prev_br = 0;
   prev_heading = 0;
   targetHeadingDriveControl = 0;
+  driveControlHeadingInit = false;
+  driveControlWasRotating = false;
+  driveControlLastRotationTime = 0;
+  driveControlHeadingPID.reset();
   for (int i = 0; i < motors.size(); i++) {
     try {
       if (motors[i].get_temperature() > 60) {
@@ -190,21 +194,20 @@ void Chassis::setThetaGains(std::vector<ScheduledGain> steps) {
 void Chassis::driveControl(float forward, float sideways, float rotation,
                            DriveCurves drivecurves, bool fieldCentric,
                            float headingOffset, DriveCorrection correction) {
-  static bool headingInitialized = false;
-  static float targetHeading = 0.0f;
-  static PID headingPID(0, 0, 0, 0);
-  static uint32_t lastRotationTime = 0;
-  static bool wasRotating = false;
+  float &targetHeading = targetHeadingDriveControl;
+  PID &headingPID = driveControlHeadingPID;
+  uint32_t &lastRotationTime = driveControlLastRotationTime;
+  bool &wasRotating = driveControlWasRotating;
   constexpr float MAX_DRIVE_INPUT = 127.0f;
   constexpr float SETTLE_DELAY_MS = 150.0f;
   constexpr float MAX_CORRECTION = 40.0f;
 
-  if (!headingInitialized) {
+  if (!driveControlHeadingInit) {
     targetHeading = getPose(false).theta;
-    headingPID.setGains(
-        {correction.kP, correction.kI, correction.kD, 0.0, 0.0});
-    headingInitialized = true;
+    driveControlHeadingInit = true;
   }
+  // Apply caller-supplied gains every call so runtime changes take effect
+  headingPID.setGains({correction.kP, correction.kI, correction.kD, 0.0, 0.0});
 
   auto applyCurve = [&](float x, const DriveCurve &c) -> float {
     if (std::abs(x) < c.deadzone)
@@ -267,8 +270,6 @@ void Chassis::driveControl(float forward, float sideways, float rotation,
     if (wasRotating) {
       targetHeading = getPose(false).theta;
       headingPID.reset();
-      headingPID.setGains(
-          {correction.kP, correction.kI, correction.kD, 0.0, 0.0});
       wasRotating = false;
     }
 

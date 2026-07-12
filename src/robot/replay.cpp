@@ -124,14 +124,14 @@ void Chassis::runDriverReplay(std::vector<PathPoint> data, float lookahead) {
   if (current_segment.size() >= 2) {
     segments.push_back(current_segment);
   }
-  bool is_reversed = false;
-
+  // Recorded thetas already capture the robot's true heading (including
+  // segments driven in reverse), so each segment replays with reversed=false
+  // and CustomAngles tracks the logged headings directly.
   for (const auto &seg : segments) {
     if (seg.size() >= 2) {
       followPath(seg, lookahead, defaultParams, HeadingMode::CustomAngles, 0.0f,
-                 is_reversed);
+                 false);
       waitUntilDone();
-      is_reversed = !is_reversed;
     }
   }
 }

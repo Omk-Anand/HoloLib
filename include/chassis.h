@@ -500,6 +500,10 @@ private:
   float prev_fl = 0, prev_fr = 0, prev_bl = 0, prev_br = 0;
   float prev_heading = 0;
   float targetHeadingDriveControl = 0;
+  PID driveControlHeadingPID{0, 0, 0, 0};
+  bool driveControlHeadingInit = false;
+  bool driveControlWasRotating = false;
+  uint32_t driveControlLastRotationTime = 0;
   friend void odomTaskTrampoline(void *);
   float motionDistTraveled = 0.0f;
   float xProcessNoise = 0.001f, yProcessNoise = 0.001f,
