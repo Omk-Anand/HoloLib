@@ -13,13 +13,18 @@ is, getting it where you want it, and keeping it from running into things.
 ### Basic setup
 
 Create the chassis, odometry, and tuning objects in your `main.cpp` by giving
-them the motors, the IMU, and the physical dimensions of your robot:
+them the motors, the IMU, and the physical dimensions of your robot.
+
+Keep the names below exactly as they are. `include/hololib/config.hpp` declares
+this set as `extern`, and every motion function falls back to them by default,
+so renaming one or leaving it out breaks the build:
 
 ```cpp
 #include "main.h"
 #include "hololib/chassis.hpp"
 #include "hololib/config.hpp"
 #include "hololib/localization/odometry.hpp"
+#include "hololib/motions/motions.hpp"
 #include "hololib/util/GainScheduler.hpp"
 
 // Motors (ports: front-left, front-right, back-left, back-right)
@@ -53,12 +58,16 @@ hololib::GainScheduler xSched = hololib::GainScheduler();
 hololib::GainScheduler ySched = hololib::GainScheduler();
 hololib::GainScheduler thetaSched = hololib::GainScheduler();
 
+// The obstacle manager and pose getter the motion functions expect
+hololib::ObstacleManager obstacles = hololib::ObstacleManager();
+const std::function<hololib::Pose(bool)> poseGetter = [](bool radians) { return odom.getPose(radians); };
+
 void initialize() {
   // Calibrate the chassis and start odometry
   chassis.calibrate();
   odom.startTask();
 
-  // Gain schedule: {error threshold, {kP, kI, kD, kF, slew}}
+  // Gain schedule: {error threshold, {kP, kI, kD}}
   xSched.setGains({
       {36.0, {15, 0, 2.4}},
       {0.0,  {25, 0, 0.5}}
@@ -78,14 +87,16 @@ void initialize() {
 
 ### Driving in autonomous
 
-Once the chassis is set up, autonomous moves read like instructions:
+Once the chassis is set up, autonomous moves read like instructions. Calling a
+motion directly blocks until it finishes; wrapping it in `chassisAsync` runs it
+on the motion handler, so your code keeps going until you ask for the next move:
 
 ```cpp
 void autonomous() {
   // Starting pose on the field: (x, y, theta in degrees)
-  chassis.setPose(0.0, 0.0, 0.0);
+  odom.setPose(0.0, 0.0, 0.0);
 
-  // Drive a sequence of motions asynchronously
+  // Each move runs in the background, and the next call waits for it to finish
   chassisAsync(hololib::moveToPoint(24, 24));
   chassisAsync(hololib::turnToPoint(12, 12));
 
@@ -118,7 +129,7 @@ void opcontrol() {
   while (true) {
     int forward = master.get_analog(ANALOG_LEFT_Y); // forward / back
     int sideways = master.get_analog(ANALOG_LEFT_X); // strafe left / right
-    int rotation = master.get_analog(ANALOG_RIGHT_X); // rotate independenly
+    int rotation = master.get_analog(ANALOG_RIGHT_X); // rotate independently
 
     chassis.driveControl(
       forward,
@@ -126,7 +137,7 @@ void opcontrol() {
       rotation,
       {.movement = movement_curve, .rotation = rotation_curve},
       true, // turn field-centric driving on
-      90, // define inital heading offset
+      90, // define initial heading offset
       {.correctionOn = true, .kP = 0.15f, .kI = 0.01f, .kD = 0.01f} // active heading correction
     );
 
@@ -164,12 +175,17 @@ over a long run. After a few seconds the robot's idea of "where I am" has
 drifted away from reality.
 
 HoloLib's odometry layer, `EncoderEKFOdometry`, fixes this by not trusting any
-single sensor. It blends drive motor encoders, optional tracking wheels, and
-the IMU at once, while `PoseEKF` handles the actual Kalman filter math:
+single sensor. It blends what it has available, while `PoseEKF` handles the
+actual Kalman filter math:
 
 - the IMU gyro, for fast and accurate rotation,
-- dedicated tracking wheels (vertical and horizontal layouts are configurable),
-- the chassis motor encoders.
+- the chassis motor encoders,
+- dedicated tracking wheels, if you register any with `addTrackingWheel`
+  (vertical and horizontal layouts are both supported).
+
+Out of the box it runs on the motor encoders and the IMU. Adding tracking wheels
+switches the position half over to them, since unpowered wheels don't slip the
+way driven ones do.
 
 An Extended Kalman Filter does this in two repeating steps. First it
 **predicts** where the robot should be now, using the holonomic motion model.
@@ -252,13 +268,14 @@ makes it worth the trouble. HoloLib gives you that control directly through the
 ## 5. Driver replay
 
 A good driver run is itself a kind of autonomous routine, you just have to
-capture it. `DriverReplay` logs the robot's position and velocity while you
-drive a practice run, then reconstructs that movement during the autonomous
-period. It's a macro system for the whole robot.
+capture it. `DriverReplay::logReplayData` prints the robot's pose while you
+drive a practice run, and `runDriverReplay` drives those points back during
+autonomous. It splits the run into segments wherever you reversed direction, so
+a back-and-forth run plays back the same way.
 
-> **Heads up:** right now the replay only logs positions and velocities. Joystick
-> inputs aren't recorded, on purpose, to keep the log from overflowing the
-> buffer.
+> **Heads up:** the replay only captures the path the robot took. Button presses
+> aren't recorded into it, on purpose, to keep the log from overflowing the
+> buffer, so mechanisms still need to be scripted separately.
 
 ## Project Structure
 
@@ -312,14 +329,15 @@ before you run them on a real robot:
 python tools/sim_auton.py
 ```
 
-Open the file it generates in a browser to step through the path and watch for
-overshoot.
+It reads the motion calls out of `src/main.cpp` and writes
+`bin/auton_viewer.html`. Open that file in a browser to step through the path
+and watch for overshoot.
 
 ---
 
 ## Contributing
 
-This is a one-person project, so contributions, issses, and pull requests are welcome!
+This is a one-person project, so contributions, issues, and pull requests are welcome!
 
 ## License, attributions, & third-party licenses
 

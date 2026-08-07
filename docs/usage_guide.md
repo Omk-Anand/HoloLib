@@ -14,88 +14,107 @@ treat the rest like a reference, jump to the part you need.
 
 ## Setup and tuning
 
-Everything starts with one `Chassis` object. You give it the four motors, the
-IMU, and a `ChassisConfig` describing the robot, and it owns odometry, PID, and
-every movement from there.
+HoloLib is built out of a few objects that hand work to each other rather than
+one big class. You create them at global scope in `main.cpp`, and the motion
+functions pick them up from there.
+
+The names matter. `include/hololib/config.hpp` declares this exact set as
+`extern`, and every motion function defaults to them, so if you rename one or
+skip it the project won't link:
 
 ```cpp
 #include "main.h"
+#include "hololib/chassis.hpp"
+#include "hololib/config.hpp"
+#include "hololib/localization/odometry.hpp"
+#include "hololib/motions/motions.hpp"
+#include "hololib/util/GainScheduler.hpp"
 
-pros::Motor front_left(1, pros::E_MOTOR_GEAR_GREEN, false, pros::E_MOTOR_ENCODER_DEGREES);
-pros::Motor front_right(2, pros::E_MOTOR_GEAR_GREEN, true,  pros::E_MOTOR_ENCODER_DEGREES);
-pros::Motor back_left(3, pros::E_MOTOR_GEAR_GREEN, false, pros::E_MOTOR_ENCODER_DEGREES);
-pros::Motor back_right(4, pros::E_MOTOR_GEAR_GREEN, true,  pros::E_MOTOR_ENCODER_DEGREES);
+pros::Motor frontLeft(-3, pros::MotorGear::blue);
+pros::Motor frontRight(2, pros::MotorGear::blue);
+pros::Motor backLeft(-4, pros::MotorGear::blue);
+pros::Motor backRight(1, pros::MotorGear::blue);
+pros::Imu imu(10);
 
-pros::Imu imu(5);
-
-ChassisConfig config {
-  .trackWidth       = 12.5,   // left wheel to right wheel, inches
-  .drivetrainWidth  = 14.0,
-  .drivetrainLength = 14.0,
+hololib::ChassisConfig chassis_config = {
+  .drivetrainWidth  = 9.1,    // inches
+  .drivetrainLength = 10.25,  // inches
   .wheelDiameter    = 3.25,   // inches
-  .gearRatio        = 1.0,    // motor rotations per wheel rotation
-  .kfEnabled        = true    // Kalman filter the raw encoders
+  .gearRatio        = 0.5     // wheel rotations per motor rotation
 };
 
-Chassis chassis(front_left, front_right, back_left, back_right, imu, config);
+hololib::EncoderEKFOdometry odom(frontLeft, frontRight, backLeft, backRight, imu, chassis_config);
+hololib::Chassis chassis(frontLeft, frontRight, backLeft, backRight, imu, odom);
+
+hololib::GainScheduler xSched, ySched, thetaSched;
+hololib::ObstacleManager obstacles;
+
+const std::function<hololib::Pose(bool)> poseGetter = [](bool radians) { return odom.getPose(radians); };
 ```
 
-Get the directions right when you build the motors. The two right-side motors
-are reversed in the example above, that's normal for an X-drive, but it depends
-on how yours is wired. If a movement runs away in the wrong direction, a flipped
-motor is the first thing to check.
+Note that `odom` has to exist before `chassis`, because the chassis holds a
+reference to it.
 
-Then calibrate once at the start of the match, before you try to drive anything:
+Get the motor directions right when you build them. A negative port number
+reverses that motor, which is how the example above flips the left side. If a
+movement runs away in the wrong direction, a motor sign is the first thing to
+check.
+
+Then calibrate once at the start of the match and start the odometry task,
+before you try to drive anything:
 
 ```cpp
 void initialize() {
-  chassis.calibrate();   // resets the IMU and zeros the encoders
+  chassis.calibrate();   // resets and waits out the IMU calibration
+  odom.startTask();      // spawns the tracking task (10 ms period by default)
 }
 ```
 
-`calibrate()` takes a couple of seconds and the robot has to sit still while the
-IMU settles. Call it in `initialize()`, not right before a move.
+`calibrate()` blocks until the IMU finishes settling and the robot has to sit
+still while it does, so call it in `initialize()`, not right before a move. It
+rumbles the controller when it's done.
 
 ### How the axes are laid out
 
 Before you tune anything, know what the controllers are working on. HoloLib runs
-three independent PID controllers:
+three independent PID controllers, each fed by its own gain scheduler:
 
-| Controller | Controls | Error is measured in |
+| Scheduler | Controls | Error is measured in |
 | --- | --- | --- |
-| **X** | strafing (left/right) | inches |
-| **Y** | forward/back | inches |
-| **Theta** | heading | degrees |
+| `xSched` | strafing (left/right) | inches |
+| `ySched` | forward/back | inches |
+| `thetaSched` | heading | degrees |
 
-So "X gains" tune your sideways movement and "Y gains" tune your forward
+So `xSched` tunes your sideways movement and `ySched` tunes your forward
 movement. On a symmetric X-drive these usually end up close to each other, but
 they're separate so you can tune them separately if the robot behaves
 differently strafing than it does driving straight.
 
 ### Setting gains
 
-You hand each controller its gains with `setXGains`, `setYGains`, and
-`setThetaGains`. These don't take a single set of numbers, they take a
-*schedule* (more on why in [Gain scheduling](#gain-scheduling)). For now, the
-short version: each line is `{error, {kP, kI, kD, kF, slew}}`, and the controller
-picks gains based on how far it still has to go.
+Each scheduler takes its gains through `setGains`. It doesn't take a single set
+of numbers, it takes a *schedule* (more on why in
+[Gain scheduling](#gain-scheduling)). For now, the short version: each line is
+`{error threshold, {kP, kI, kD}}`, and the controller picks gains based on how
+far it still has to go.
 
 ```cpp
 void initialize() {
   chassis.calibrate();
+  odom.startTask();
 
-  // {error level, {kP, kI, kD, kF, slew}}
-  chassis.setXGains({
-      {24.0, {9.0, 0.0, 0.6, 0.0, 8.0}},   // far away: get moving
-      {0.0,  {6.5, 0.02, 0.9, 0.0, 4.0}}   // dialed in: settle gently
+  // {error threshold, {kP, kI, kD}}
+  xSched.setGains({
+      {36.0, {15, 0, 2.4}},   // far away: get moving
+      {0.0,  {25, 0, 0.5}}    // dialed in: settle gently
   });
-  chassis.setYGains({
-      {24.0, {9.0, 0.0, 0.6, 0.0, 8.0}},
-      {0.0,  {6.5, 0.02, 0.9, 0.0, 4.0}}
+  ySched.setGains({
+      {36.0, {15, 0, 1.6}},
+      {0.0,  {20, 0, 1.5}}
   });
-  chassis.setThetaGains({
-      {90.0, {2.8, 0.0,  0.18}},
-      {0.0,  {3.2, 0.01, 0.22}}
+  thetaSched.setGains({
+      {90.0, {2.76411f, 0.0116046f, 0.0384008f}},
+      {0.0,  {3.0f, 0.0f, 0.04f}}
   });
 }
 ```
@@ -103,6 +122,15 @@ void initialize() {
 If you don't want to deal with scheduling yet, just give each one a single line
 with a threshold of `0.0`. That's a plain, fixed PID and it's a perfectly good
 place to start.
+
+There's also `addStep(threshold, kP, kI, kD, slew)` if you'd rather build the
+schedule one line at a time. `setGains` is written on top of it.
+
+Two things worth knowing about the schedule entries. `ScheduledGain` holds a
+`PIDGains`, which has a `kF` field, but the scheduler drops it, so only `kP`,
+`kI`, `kD`, and `slew` survive into the running controller. And you can pass a
+fifth number for the slew rate, which is carried through and interpolated like
+the rest.
 
 ### How to actually tune the PIDs
 
@@ -124,72 +152,91 @@ For each one, the loop is the same:
 - Only add **kI** if the robot consistently stops *just short* of the target and
   sits there. A little goes a long way, and too much makes it wind up and
   overshoot. Most moves don't need much kI at all.
-- **kF** (feed-forward) and **slew** are polish. Slew limits how fast the output
-  can jump, which smooths out the start of a move so you're not slamming the
-  motors from zero.
+- **slew** is polish. It limits how fast the output can jump, which smooths out
+  the start of a move so you're not slamming the motors from zero.
 
 The PID controller has a few extra features once you outgrow the basics:
 sign-flip reset (dumps the integral when you cross the target so it doesn't
 carry stale windup), an integral limit, a windup range, and a filtered
-derivative. You usually don't need to touch these, but they're there in
-[PID.hpp](include/PID.hpp) when you do.
+derivative. The motion functions build their controllers internally so you don't
+normally reach for these, but they're documented in
+[PID.hpp](../include/hololib/util/PID.hpp) if you're writing your own motion.
 
 ### Movement parameters
 
-Almost every autonomous function takes a `MoveParams` as its last real argument.
-This is how you control speed, accuracy, and when a move is allowed to give up:
+Every autonomous function takes a `MoveParams` as its last real argument. This is
+how you control speed, accuracy, and when a move is allowed to give up:
 
 ```cpp
-MoveParams params {
+hololib::MoveParams params {
+  .angleCorrection     = true,    // face the direction of travel while driving
   .maxTranslationSpeed = 110.0f,  // cap translation output (0-127)
   .maxRotationSpeed    = 90.0f,   // cap rotation output
   .minSpeed            = 12.0f,   // floor so it doesn't stall crawling in
   .exitRange           = 1.0f,    // "close enough" distance to finish
   .earlyExitRange      = 0.0f,    // bail out this far from the target
-  .timeout             = 4000,    // hard stop after this many ms
-  .async               = true     // queue it and return immediately
+  .timeout             = 4000     // hard stop after this many ms
 };
 
-chassis.moveToPoint(24, 24, params);
+hololib::moveToPoint(24, 24, params);
 ```
 
 A few of these earn their keep:
 
 - **`timeout`** is your safety net. If a move can't settle (stuck on a wall, bad
-  tune), it ends here instead of hanging your whole routine. Always set one.
+  tune), it ends here instead of hanging your whole routine. It defaults to
+  5000 ms.
 - **`exitRange`** is the accuracy/speed trade. Tighter means more precise but the
-  robot spends longer fussing at the end.
+  robot spends longer fussing at the end. Defaults to 0.5 inches.
 - **`earlyExitRange`** lets a move end before it fully settles, handy when you
-  want to flow straight into the next move without stopping dead.
-- **`async`** is covered in [The motion handler](#the-motion-handler). Leave it
-  `true` unless you specifically want the call to block.
+  want to flow straight into the next move without stopping dead. Left at `0.0`
+  it's off.
+- **`minSpeed`** keeps the robot from stalling out as the error shrinks and the
+  PID output falls off. Note that the motions stop applying it once you're
+  inside the exit range, so it won't fight the settle.
 
-You can also set one `MoveParams` as the default for everything with
-`setMoveParams(params)` so you're not repeating yourself on every call.
+There's no global default you can set. If you use the same parameters
+everywhere, make one `MoveParams` at file scope and pass it into each call.
 
 ---
 
 ## Motion functions
 
-These are the autonomous moves. They all share the same shape: pass a target,
-optionally pass a `MoveParams`, and the chassis drives there using the gains you
-tuned. By default they're asynchronous, they get queued and the call returns
-right away, which is what lets you line several up in a row.
+These are the autonomous moves. They live in the `hololib` namespace as plain
+functions, not chassis methods, so you call them directly:
+
+```cpp
+hololib::moveToPoint(24, 24);
+```
+
+Called like that they **block** until the move finishes. To run one through the
+motion handler instead, wrap it in the `chassisAsync` macro:
+
+```cpp
+chassisAsync(hololib::moveToPoint(24, 24));
+```
+
+See [The motion handler](#the-motion-handler) for what that actually buys you,
+it's a little different from the async you might expect.
+
+Each function also takes a trailing `MoveSettings` you'll almost never pass. It
+defaults to the global objects from your `main.cpp`, and exists so you can swap
+in different motors, schedulers, or a different pose source when you want to.
 
 ### moveToPoint
 
 Drives to an (x, y) coordinate. By default it also rotates to face the point as
 it goes, which keeps the front of the robot pointed where it's headed. Set
-`angleCorrection` to `false` if you want to hold your current heading and just
-slide over there instead.
+`angleCorrection` to `false` in the params if you want to hold your current
+heading and just slide over there instead.
 
 ```cpp
-chassis.moveToPoint(36, 24);                 // drive there, facing the point
-chassis.moveToPoint(36, 24, params, false);  // drive there, keep current heading
+hololib::moveToPoint(36, 24);                              // drive there, facing the point
+hololib::moveToPoint(36, 24, {.angleCorrection = false});  // drive there, keep current heading
 ```
 
-It stops correcting heading in the last couple of inches so the robot isn't
-spinning while it tries to settle on the spot.
+It stops correcting heading in the last two inches so the robot isn't spinning
+while it tries to settle on the spot.
 
 ### moveToPose
 
@@ -198,31 +245,34 @@ the translation and the rotation at the same time, so it arrives in position
 *and* pointing the right way, instead of driving there and then turning.
 
 ```cpp
-chassis.moveToPose(48, 24, 90.0f);   // end at (48, 24), facing 90 degrees
+hololib::moveToPose(48, 24, 90.0f);   // end at (48, 24), facing 90 degrees
 ```
 
-![moveToPose lands at the coordinate and the heading together](docs/diagrams/move-to-pose.svg)
+![moveToPose lands at the coordinate and the heading together](diagrams/move-to-pose.svg)
 
 Use this when the *next* thing you do depends on your heading, lining up on a
-goal, scoring, handing off into a turn-free path.
+goal, scoring, handing off into a turn-free path. It won't call itself done
+until both the position is inside `exitRange` and the heading is within two
+degrees.
 
 ### moveRelative, moveDistance, strafeDistance
 
 These move relative to where the robot is right now, instead of to an absolute
 field coordinate. `moveRelative` takes a forward and a sideways distance at once;
-`moveDistance` and `strafeDistance` are just the straight-line shortcuts.
+`moveDistance` and `strafeDistance` are thin wrappers over it for the
+straight-line cases.
 
 ```cpp
-chassis.moveDistance(18);          // 18 inches forward
-chassis.moveDistance(-12);         // 12 inches back
-chassis.strafeDistance(10);        // 10 inches sideways
-chassis.moveRelative(18, 10);      // forward and sideways together (diagonal)
+hololib::moveDistance(18);          // 18 inches forward
+hololib::moveDistance(-12);         // 12 inches back
+hololib::strafeDistance(10);        // 10 inches sideways
+hololib::moveRelative(18, 10);      // forward and sideways together (diagonal)
 ```
 
-By default they hold your current heading the whole way (`holdHeading = true`),
-so the robot tracks straight instead of drifting off-angle. These are great for
-short, predictable adjustments where you don't want to think in field
-coordinates.
+By default they hold your starting heading the whole way (`holdHeading = true`,
+the argument right after the distances), so the robot tracks straight instead of
+drifting off-angle. These are great for short, predictable adjustments where you
+don't want to think in field coordinates.
 
 ### turnToHeading and turnToPoint
 
@@ -230,46 +280,36 @@ coordinates.
 place until the front faces a coordinate, it figures out the angle for you.
 
 ```cpp
-chassis.turnToHeading(180.0f);   // face straight back
-chassis.turnToPoint(0, 0);       // face the field origin, wherever you are
+hololib::turnToHeading(180.0f);   // face straight back
+hololib::turnToPoint(0, 0);       // face the field origin, wherever you are
 ```
 
-![turnToPoint rotates in place until the front faces the target](docs/diagrams/turn-to-point.svg)
+![turnToPoint rotates in place until the front faces the target](diagrams/turn-to-point.svg)
 
 `turnToPoint` is the one you want for aiming, point at a goal or a target before
-you shoot or score, without having to do the trig yourself. Both wait for the
-robot to actually stop rotating before they call it done, so you don't fire off
-the next move while it's still drifting.
+you shoot or score, without having to do the trig yourself. Both check that the
+error has actually stopped changing before they call it done, so you don't fire
+off the next move while the robot is still drifting.
+
+For turns, `exitRange` and `earlyExitRange` are in degrees, not inches. The
+default `exitRange` of 0.5 is a tight turn tolerance, so loosen it if your turns
+sit there hunting.
 
 ### swingTurn
 
-A swing turn holds one side of the drive still and drives the other side, so the
-robot pivots around the locked side instead of spinning around its center. The
-turn is tighter and it sweeps the robot through an arc, which is useful when
-you're tucked against a wall or working in a corner.
+A swing turn drives one side of the drive harder than the other so the robot
+sweeps through an arc instead of spinning around its center. Pass which side to
+pivot around:
 
 ```cpp
-chassis.swingTurn(90.0f, Chassis::SwingSide::Left);   // pivot around the left side
-chassis.swingTurn(90.0f, Chassis::SwingSide::Right);
+hololib::swingTurn(90.0f, hololib::SwingSide::Left);    // pivot around the left side
+hololib::swingTurn(90.0f, hololib::SwingSide::Right);
 ```
 
-![A swing turn pivots the robot around one locked side](docs/diagrams/swing-turn.svg)
+![A swing turn pivots the robot around one locked side](diagrams/swing-turn.svg)
 
-### curveCircle
-
-Drives a smooth circular arc of a given radius until you hit a target heading.
-You can let it pick the shorter direction automatically, or force clockwise /
-counter-clockwise.
-
-```cpp
-chassis.curveCircle(90.0f, 12.0f);    // arc with a 12-inch radius, end at 90 degrees
-chassis.curveCircle(90.0f, 12.0f, params, Chassis::CurveDirection::CW);
-```
-
-![curveCircle follows an arc of a set radius to a target heading](docs/diagrams/arc-turn.svg)
-
-A bigger radius is a wider, gentler curve; a smaller radius turns tighter. This
-is how you round a corner without stopping to turn.
+This is useful when you're tucked against a wall or working in a corner and a
+center pivot would put a corner of the robot into something.
 
 ### followPath
 
@@ -282,24 +322,29 @@ road a bit rather than at your own bumper, that's what keeps the motion smooth
 and stops the robot from snapping corner to corner. That lookahead distance is
 the second argument, in inches.
 
-![Path following aims at a point a set distance ahead on the path](docs/diagrams/path-follow.svg)
+![Path following aims at a point a set distance ahead on the path](diagrams/path-follow.svg)
+
+Unlike the other motions, `followPath` has no default arguments before
+`MoveParams`, so you spell out the heading mode, the hold angle, and the
+reversed flag every time:
 
 ```cpp
-std::vector<PathPoint> path = {
+std::vector<hololib::PathPoint> path = {
   {0,  0,  0},
   {12, 18, 0},
   {30, 24, 0},
   {48, 24, 0}
 };
 
-chassis.followPath(path, 8.0f);   // 8-inch lookahead
+// path, lookahead, heading mode, hold angle, reversed
+hololib::followPath(path, 8.0f, hololib::HeadingMode::FollowPath, 0.0f, false);
 ```
 
 The `headingMode` argument decides where the robot points while it drives the
 path:
 
-- **`HeadingMode::FollowPath`** (default), the front follows the direction of
-  travel, so the robot "drives like a car" along the curve.
+- **`HeadingMode::FollowPath`**, the front follows the direction of travel, so
+  the robot "drives like a car" along the curve.
 - **`HeadingMode::HoldAngle`**, lock to one heading for the whole path and pass
   the angle in `holdAngleDeg`. The robot keeps facing one way while it traces the
   shape, which an X-drive can do and a tank drive can't.
@@ -307,114 +352,115 @@ path:
   so you control the heading point by point.
 
 ```cpp
-chassis.followPath(path, 8.0f, params, HeadingMode::HoldAngle, 45.0f);
+hololib::followPath(path, 8.0f, hololib::HeadingMode::HoldAngle, 45.0f, false);
 ```
 
-Set `reversed = true` (the last argument) to drive the path backwards. A couple
-of practical notes: tuning the lookahead matters, too short and it wobbles
-trying to hug the line, too long and it cuts corners. Start around 6-10 inches
-and adjust. And you need at least two points or it won't run.
+Set the `reversed` argument to `true` to drive the path backwards. A couple of
+practical notes: tuning the lookahead matters, too short and it wobbles trying to
+hug the line, too long and it cuts corners. Start around 6-10 inches and adjust.
+And you need at least two points, it returns immediately otherwise.
 
-You can build paths by hand like above, load them from a file with
-`parsePathData(...)`, or design them in the simulator (`tools/sim_auton.py`)
-and paste the result in.
+You can build paths by hand like above, or design them in the simulator
+(`tools/sim_auton.py`) and paste the result in.
 
 ### Driver control
 
-For the opcontrol period, `driveControl` maps joystick inputs to the drive. The
-last real argument turns on **field-centric** mode, where pushing the stick
-"forward" always moves toward the same end of the field no matter which way the
-robot is currently facing.
+For the opcontrol period, `chassis.driveControl` maps joystick inputs to the
+drive. This one *is* a chassis method, since it's driving the wheels directly
+rather than running a motion. The `fieldCentric` argument turns on
+**field-centric** mode, where pushing the stick "forward" always moves toward the
+same end of the field no matter which way the robot is currently facing.
 
-![Field-centric driving keeps "forward" pointed the same way no matter the robot's heading](docs/diagrams/field-centric.svg)
+![Field-centric driving keeps "forward" pointed the same way no matter the robot's heading](diagrams/field-centric.svg)
 
 ```cpp
 void opcontrol() {
   pros::Controller master(pros::E_CONTROLLER_MASTER);
 
-  DriveCurves curves {
-    .movement = { .curve_multipler = 1.2f, .deadzone = 5.0f },
-    .rotation = { .curve_multipler = 1.5f, .deadzone = 5.0f }
-  };
+  hololib::Chassis::DriveCurve movement_curve{.curve_multipler = 1.01, .deadzone = 5, .minimum_output = 5};
+  hololib::Chassis::DriveCurve rotation_curve{.curve_multipler = 1.028, .deadzone = 5, .minimum_output = 5};
 
   while (true) {
     chassis.driveControl(
       master.get_analog(ANALOG_LEFT_Y),    // forward / back
       master.get_analog(ANALOG_LEFT_X),    // strafe
       master.get_analog(ANALOG_RIGHT_X),   // rotate
-      curves,
-      true                                  // field-centric
+      {.movement = movement_curve, .rotation = rotation_curve},
+      true,   // field-centric
+      90,     // heading offset
+      {.correctionOn = true, .kP = 0.15f, .kI = 0.01f, .kD = 0.01f}
     );
-    pros::delay(10);
+    pros::delay(20);
   }
 }
 ```
 
-The `DriveCurves` shape the stick response, a deadzone kills drift near center,
-and the curve multiplier makes small inputs gentler for fine control while still
-letting you floor it. There's also an optional `DriveCorrection` that holds your
+All seven arguments are required, there are no defaults on this one.
+
+The `DriveCurve`s shape the stick response. The deadzone kills drift near center,
+`minimum_output` is the floor once you're past the deadzone so the wheels
+actually break loose, and the curve multiplier makes small inputs gentler for
+fine control while still letting you floor it. The `DriveCorrection` holds your
 heading when you let go of the turn stick, so the robot doesn't slowly rotate off
 course while you're just translating.
 
 Field-centric relies on the IMU heading. If you skipped `calibrate()` or the IMU
-drifts, "forward" will drift with it. Pass a `headingOffset` if you want to
-redefine which way "forward" points (for example, to match your driver's view
-from across the field).
+drifts, "forward" will drift with it. The `headingOffset` redefines which way
+"forward" points, for example to match your driver's view from across the field.
 
-If you ever need raw, unfiltered control with no PID in the way, `openLoop`
-sends power straight to the wheels.
+There's also `chassis.xdrive(vx, vy, omega, theta)` if you want to command the
+drive directly with no curves or correction in the way, and `chassis.brake()`.
 
 ---
 
 ## The motion handler
 
-Every autonomous move runs through a single background queue, the `MotionHandler`
-that lives on `chassis.motion`. This is what makes the `async` flag work, and it's
-worth understanding because it changes how you write routines.
-
-When you call a move with `async = true`, it gets **added to a queue** and the
-call returns immediately. A background task pulls moves off the queue one at a
-time and runs them in order. With `async = false`, the call blocks and doesn't
-return until that move is finished.
-
-Why this matters: async moves let you do other things while the robot drives, run
-an intake, raise a lift, check a sensor, without waiting for the wheels to stop.
-You stay in control of timing instead of being stuck in a blocking call.
-
-The functions you'll use to manage it:
+The `chassisAsync` macro hands your motion to `hololib::motion_handler`, a single
+background task that runs one motion at a time:
 
 ```cpp
-chassis.moveToPoint(24, 24);     // queued, returns right away
-chassis.moveToPose(48, 24, 90);  // queued behind the first one
-
-chassis.waitUntilDone();         // block here until the queue is empty
+#define chassisAsync(f) hololib::motion_handler::move([&] { f; });
 ```
 
-- **`waitUntilDone()`**, wait for everything queued to finish. This is your main
-  tool for "do these moves, then continue."
-- **`waitUntil(distance)`**, wait until the *current* move has covered a certain
-  distance, then keep going. Perfect for firing an action partway through a move:
+Here's the part worth understanding, because it's easy to misread. `move()` takes
+a mutex that the running motion holds. So if you write two moves back to back,
+the *second `chassisAsync` call itself blocks* until the first motion finishes:
 
-  ```cpp
-  chassis.moveToPoint(48, 0);
-  chassis.waitUntil(24);     // halfway-ish
-  intake.move(127);          // start the intake mid-drive
-  chassis.waitUntilDone();
-  ```
+```cpp
+chassisAsync(hololib::moveToPoint(24, 24));   // returns right away, motion starts
+chassisAsync(hololib::moveToPose(48, 24, 90)); // waits here until the first is done
+std::println("both done");                     // ...so this prints at the end
+```
 
-- **`cancelMotion()`**, stop the move that's running right now.
-- **`cancelAllMotions()`**, stop the current move and wipe the queue. Good for a
-  hard reset, say, when a sensor says you've grabbed what you came for.
-- **`getDistanceTraveled()`**, how far the current move has gone, in inches (or
-  meters if you ask for it).
+There's no queue holding pending motions. What you get is one motion running in
+the background while your code keeps going, up until you ask for another one.
 
-The handler also exposes `isInMotion()`, `isQueueEmpty()`, and a
-`setOnMotionStart()` callback if you want to react to moves starting, useful for
-logging or kicking off a mechanism automatically.
+That's still useful. The window between starting a motion and requesting the next
+is yours, so you can run an intake, raise a lift, or poll a sensor while the
+robot drives:
 
-Because moves queue, calling five moves in a row doesn't run them all at once,
-it lines them up. If you want a move to *replace* what's running instead of
-waiting behind it, cancel first.
+```cpp
+chassisAsync(hololib::moveToPoint(48, 0));
+intake.move(127);                 // runs while the robot is still driving
+pros::delay(500);
+intake.brake();
+
+hololib::motion_handler::waitUntilDone();   // now wait for the drive to finish
+```
+
+The full set of functions:
+
+- **`waitUntilDone()`**, block until the running motion finishes. This is your
+  main tool for "do this move, then continue."
+- **`isMoving()`**, whether a motion is running right now.
+- **`cancel()`**, stop the motion that's running. It notifies the task, and the
+  motion breaks out of its loop on its next iteration, so give it a few
+  milliseconds before you count on it being stopped.
+- **`move(motion, priority)`**, what `chassisAsync` calls. The optional second
+  argument sets the task priority for that motion.
+
+Motions also cancel themselves if the competition state changes mid-move, so a
+routine won't keep driving into the next period.
 
 ---
 
@@ -428,18 +474,17 @@ any one sensor on its own.
 
 ### How it works
 
-The filter tracks three numbers, your X, Y, and heading, and runs two steps over
-and over, a few hundred times a second:
+The filter tracks your X, Y, and heading, and runs two steps over and over, once
+per odometry tick:
 
 1. **Predict.** Using how much the wheels moved this tick, it works out where the
-   robot *should* be now. It does this with the real holonomic motion model
-   (proper arc integration, not a straight-line guess), so curved motion gets
+   robot *should* be now, using the holonomic motion model, so curved motion gets
    estimated correctly.
 2. **Correct.** It compares that prediction against what the sensors actually
    read, the IMU for heading, tracking wheels or encoders for position, and
    nudges its estimate toward whichever source it trusts more.
 
-![Each cycle the EKF predicts from motion, then corrects with sensors](docs/diagrams/ekf-loop.svg)
+![Each cycle the EKF predicts from motion, then corrects with sensors](diagrams/ekf-loop.svg)
 
 "How much it trusts each source" is the whole game, and it's set by *noise*
 values. Process noise is how much you distrust the motion model's prediction;
@@ -448,42 +493,90 @@ against each other automatically every tick.
 
 ### Using it
 
-The EKF runs by default. You can turn it off and fall back to plain odometry,
+The odometry task runs on a 10 ms period by default. Pass a different one to
+`startTask` if you want:
+
+```cpp
+odom.startTask();      // 10 ms
+odom.startTask(20);    // 20 ms
+```
+
+The EKF is on by default. You can turn it off and fall back to plain odometry,
 which is worth doing while you tune everything else:
 
 ```cpp
-chassis.setEKFstate(false);   // raw odometry, no filtering
-chassis.setEKFstate(true);    // filtering back on
+odom.setKalmanFilterEnabled(false);   // raw odometry, no filtering
+odom.setKalmanFilterEnabled(true);    // filtering back on
+```
+
+Reading and writing the pose goes through the odometry object. `getPose` takes a
+bool for the units, and `setPose` always takes degrees:
+
+```cpp
+odom.setPose(0, 0, 90);                   // x, y, theta in degrees
+
+hololib::Pose pose = odom.getPose(false); // false = degrees, true = radians
+std::println("{}, {}, {}", pose.x, pose.y, pose.theta);
+```
+
+`setPose` also writes the heading straight to the IMU, so it's a real reset, not
+just a bookkeeping change.
+
+Turning on velocity calculations fills in the `velocity` member of the pose,
+which is handy when you're writing your own motions:
+
+```cpp
+odom.setVelocityCalculations(true);
+hololib::Pose p = odom.getPose(false);
+// p.velocity.vx, p.velocity.vy, p.velocity.w
 ```
 
 If you have dedicated tracking wheels (unpowered wheels on rotation sensors),
-register them, this is the single biggest accuracy upgrade you can give odometry,
+register them. This is the single biggest accuracy upgrade you can give odometry,
 since they don't slip the way driven wheels do:
 
 ```cpp
-TrackingWheelConfig vertical {
-  .orientation = TrackingWheelOrientation::VERTICAL,
-  // wheel size, sensor port, offsets from center...
-};
-chassis.addTrackingWheel(vertical);
+odom.addTrackingWheel({
+  .port          = 7,
+  .orientation   = hololib::TrackingWheelOrientation::VERTICAL,
+  .xOffset       = 0.0f,
+  .yOffset       = 1.5f,
+  .wheelDiameter = 2.75f,
+  .gearRatio     = 1.0f
+});
 ```
 
-To tune the filter's trust, use `setEKFGains`:
-
-```cpp
-//            xProcess  yProcess  thetaProcess  measurement
-chassis.setEKFGains(0.001f,  0.001f,   0.003f,       0.0001f);
-```
-
-- Raise **process noise** if your estimate lags behind reality or reacts too
-  slowly, you're telling the filter to lean more on the sensors.
-- Lower **measurement noise** to trust the IMU more (good IMU, clean readings);
-  raise it if the heading looks jumpy.
+Adding one switches the position half of the filter over to the tracking wheels
+and tightens the measurement noise to match. `clearTrackingWheels()` puts it back
+on the motor encoders.
 
 The EKF is the hardest part of the library to tune, and a badly tuned filter is
-*worse* than no filter — it'll confidently report the wrong position. If you're
-not comfortable with noise values yet, run with `setEKFstate(false)` and come
-back to it. Get your movements working on plain odometry first.
+*worse* than no filter, it'll confidently report the wrong position. If you're
+not comfortable with noise values yet, run with `setKalmanFilterEnabled(false)`
+and come back to it. Get your movements working on plain odometry first.
+
+### Resetting from distance sensors
+
+Odometry drift is cumulative, so if you have distance sensors pointed at walls
+you can snap the position back to truth mid-routine. `DistanceReset` works out
+where you must be from the wall readings:
+
+```cpp
+pros::Distance front(11), left(12);
+
+hololib::DistanceReset reset({
+  {front, 6.0, 0.0,  0.0},    // sensor, forward offset, strafe offset, mounting angle
+  {left,  0.0, 6.0, 90.0}
+});
+
+reset.update(true);   // true = write the result straight into odometry
+```
+
+It only trusts a sensor that's roughly square to a wall (within 40 degrees by
+default) and inside range, and it filters out readings that disagree with the
+current odometry by more than a few inches. Whichever axis it can't solve for
+keeps the odometry value, and the returned `distancePose` tells you which was
+which through `using_odom_x` and `using_odom_y`.
 
 ---
 
@@ -497,9 +590,10 @@ blends between them as the robot closes in.
 
 ### How the schedule reads
 
-Every entry is `{threshold, {kP, kI, kD, kF, slew}}`. The `threshold` is an error
-level, how far you still are from the target, in inches for X/Y or degrees for
-theta. The controller looks at the current error and:
+Every entry is `{threshold, {kP, kI, kD}}`, with an optional fifth number for the
+slew rate. The `threshold` is an error level, how far you still are from the
+target, in inches for X/Y or degrees for theta. The controller looks at the
+current error and:
 
 - below your smallest threshold, it uses that entry's gains,
 - above your largest threshold, it uses that entry's gains,
@@ -510,17 +604,23 @@ That interpolation is the important part, there's no jarring handoff where the
 robot lurches as gains change. The slew rate scales right along with everything
 else.
 
-![Aggressive gains far out blend into gentle gains as the robot settles in](docs/diagrams/gain-schedule.svg)
+![Aggressive gains far out blend into gentle gains as the robot settles in](diagrams/gain-schedule.svg)
+
+The scheduler works on the absolute value of the error, so you only ever write
+positive thresholds and both directions get the same treatment.
 
 ### Setting it up
 
 ```cpp
-chassis.setYGains({
+ySched.setGains({
     {24.0, {9.0, 0.0,  0.6, 0.0, 8.0}},   // far: push hard, fast slew
     {6.0,  {7.5, 0.0,  0.8, 0.0, 6.0}},   // mid: ease off
     {0.0,  {6.0, 0.02, 1.0, 0.0, 3.0}}    // close: gentle, no overshoot
 });
 ```
+
+The fourth number in each set is `kF`, which the scheduler discards, so pass
+`0.0` there and put your slew rate fifth.
 
 You don't have to sort the entries, the scheduler sorts them by threshold for
 you. The common setup is aggressive gains far from the target and gentle gains as
@@ -544,25 +644,30 @@ that path on its own later.
 
 ### Recording
 
-While you drive a practice run, `logReplayData` watches the pose and prints a
-coordinate line every time the robot has actually moved (more than half an inch
-or a degree, so you're not flooded with duplicates while it sits still):
+`logReplayData` spawns a task that watches the pose and prints a coordinate line
+every time the robot has actually moved, more than half an inch or a degree, so
+you're not flooded with duplicates while it sits still. The second argument is
+the sampling period in milliseconds, floored at 20:
 
 ```cpp
 void opcontrol() {
   pros::Controller master(pros::E_CONTROLLER_MASTER);
-  chassis.logReplayData(master);   // start logging in the background
+
+  hololib::DriverReplay::logReplayData(master, 100, poseGetter);
 
   while (true) {
     chassis.driveControl(/* ... your normal driving ... */);
-    pros::delay(10);
+    pros::delay(20);
   }
 }
 ```
 
-Drive your run, then grab the printed `x, y, theta` lines from the terminal.
-Those points *are* your path. Call `disableReplayDataLogging()` when you want to
-stop.
+Drive your run, then grab the printed `x,y,theta` lines from the terminal. Those
+points *are* your path.
+
+There's a separate `getControllerInput(master)` that times how long each button
+was held and prints it. It's recorded independently of the pose log and isn't
+played back, so treat it as a diagnostic rather than part of the replay.
 
 ### Playing it back
 
@@ -573,27 +678,27 @@ back-and-forth:
 
 ```cpp
 void autonomous() {
-  std::vector<PathPoint> recorded = {
+  std::vector<hololib::PathPoint> recorded = {
     {0,   0,   0},
     {14,  6,   12},
     {28,  10,  20},
     // ... the points you captured ...
   };
 
-  chassis.setPose(0, 0, 0);          // start where the recording started
-  chassis.runDriverReplay(recorded, 8.0f);   // 8-inch lookahead
+  odom.setPose(0, 0, 0);   // start where the recording started
+  hololib::DriverReplay::runDriverReplay(recorded, 8.0f);   // 8-inch lookahead
 }
 ```
 
-You can also keep paths in a file and load them with `parsePathData(...)` instead
-of pasting them inline.
+It drives each segment with `followPath` in `CustomAngles` mode and waits for one
+to finish before starting the next, so the whole call blocks until the replay is
+done.
 
 Replay records the robot's *path*, not your button presses. It won't fire your
-intake, lift, or anything else — that's on purpose, to keep the log small. Drive
-the path with replay, and script your mechanisms separately around it (the
-[motion handler](#the-motion-handler)'s `waitUntil` is handy for timing those).
-Also make sure `setPose` matches where you started the recording, or the whole
-run plays back shifted.
+intake, lift, or anything else, that's on purpose, to keep the log small. Drive
+the path with replay, and script your mechanisms separately around it. Also make
+sure `setPose` matches where you started the recording, or the whole run plays
+back shifted.
 
 ---
 
@@ -609,16 +714,20 @@ Obstacles are circles, a center and a radius, in the same field units as your
 poses (inches). Drop them in, then switch avoidance on:
 
 ```cpp
-chassis.addObstacle(36, 36, 6);   // something at (36, 36), 6-inch radius
-chassis.addObstacle(48, 12, 5);
+obstacles.addObstacle(36, 36, 6);   // something at (36, 36), 6-inch radius
+obstacles.addObstacle(48, 12, 5);
 
-obstacles.setAvoidanceMode(AvoidanceMode::On);
+obstacles.setRobotDimensions(9.1f, 10.25f);   // your real footprint
+obstacles.setAvoidanceMode(hololib::ObstacleManager::AvoidanceMode::On);
 ```
 
-With avoidance on, `moveToPoint`, `moveToPose`, `moveRelative`, and `followPath`
-all route around the obstacles automatically, you don't call anything different.
-For something bigger than a clean circle, stack a few overlapping obstacles to
-cover the shape.
+Avoidance is **off** by default, so nothing changes until you turn it on. With it
+on, `moveToPoint`, `moveRelative`, and `followPath` route around the obstacles
+automatically, you don't call anything different. For something bigger than a
+clean circle, stack a few overlapping obstacles to cover the shape.
+
+One gap to know about: `moveToPose` doesn't consult the obstacle manager, so
+avoidance doesn't apply there.
 
 ### How it steers around things
 
@@ -628,12 +737,12 @@ nearby obstacle pushes the robot away. Add those forces up and you get a
 direction to drive. HoloLib also adds a sideways "tangential" nudge so the robot
 *glides around* an obstacle instead of stalling head-on against it.
 
-![The target pulls, obstacles push, and the robot glides around](docs/diagrams/apf-forces.svg)
+![The target pulls, obstacles push, and the robot glides around](diagrams/apf-forces.svg)
 
 You tune that push-and-pull with `setPotentialFieldParams`:
 
 ```cpp
-//                          ka   kr    influenceRadius
+//                                ka    kr     influenceRadius
 obstacles.setPotentialFieldParams(5.0f, 50.0f, 15.0f);
 ```
 
@@ -645,17 +754,27 @@ obstacles.setPotentialFieldParams(5.0f, 50.0f, 15.0f);
   pushing at all. Outside this distance, obstacles are ignored and the robot just
   drives normally.
 
-If your robot isn't roughly square, give the avoidance math your real footprint
-with `setRobotDimensionsAvoidance(width, height)` so the clearances account for
-your actual size.
+Those three default to `5.0`, `50.0`, and `15.0`. There's also
+`setAvoidanceParams(safetyMargin, clearance)`, which feeds the waypoint-based
+path checking rather than the potential field.
 
-Potential fields are reactive — they're built to keep you from crashing into
+Potential fields are reactive, they're built to keep you from crashing into
 something you didn't fully plan for. For a tight, repeatable autonomous routine
 you'll usually get cleaner results designing a path that already goes around the
 obstacle. Treat avoidance as a safety layer, not a substitute for a good path,
 and budget time to tune `kr` and the influence radius before you trust it in a
 match.
 
-There's also `detectCollision()`, which flags a sudden impact from an
-acceleration spike, handy as a trigger if you want to react to actually bumping
-something.
+### Noticing that you hit something
+
+There's also `chassis.detectCollision()`, which watches the drive motors for a
+stall: it flags when at least two wheels are being commanded hard but aren't
+turning while pulling high current, and holds that for a quarter second before
+it reports. It lowers its current threshold on a hot motor. Poll it in your
+opcontrol loop if you want to react to actually shoving into something:
+
+```cpp
+if (chassis.detectCollision()) {
+  std::println("Collision Detected!");
+}
+```
