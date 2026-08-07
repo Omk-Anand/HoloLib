@@ -4,6 +4,7 @@
 #include "hololib/util/PID.hpp"
 #include "hololib/util/Timer.hpp"
 #include "hololib/util/util.hpp"
+#include "pros/rtos.hpp"
 #include <cmath>
 #include <print>
 
@@ -25,6 +26,8 @@ void Chassis::calibrate() {
 }
 
 void Chassis::xdrive(float vx, float vy, float omega, float theta) {
+    constexpr float DEGREES_TO_RADIANS = M_PI / 180.0f;
+    theta *= DEGREES_TO_RADIANS;
     Eigen::Vector3f state(vx, vy, omega);
     Eigen::Matrix3f rotationMatrix{
         {std::cos(theta),  std::sin(theta), 0}, //
@@ -38,8 +41,8 @@ void Chassis::xdrive(float vx, float vy, float omega, float theta) {
         {-1, 1, 1 }  //
     };
     Eigen::Vector4f motorVoltageVector = inverseKinematicsMatrix * rotationMatrix * state;
-    int max = motorVoltageVector.cwiseAbs().maxCoeff();
-    if (max > 12000) {
+    float max = motorVoltageVector.cwiseAbs().maxCoeff();
+    if (max > 12000.0f) {
         motorVoltageVector *= 12000.0f / max;
     }
     frontLeft.move_voltage(motorVoltageVector(0));
@@ -62,8 +65,9 @@ void Chassis::driveControl(float forward,
                            bool fieldCentric,
                            float headingOffset,
                            DriveCorrection correction) {
+    
     if (!headingInitialized) {
-        targetHeading = odom.getPose(false).theta;
+        targetHeading = odom.getPose(false).theta - headingOffset;
         headingPID.setGains({correction.kP, correction.kI, correction.kD, 0.0, 0.0});
         headingInitialized = true;
     }
@@ -83,7 +87,7 @@ void Chassis::driveControl(float forward,
             output = c.minimum_output;
         }
 
-        return output * sign;
+        return output * sign * JOYSTICK_SCALING_FACTOR;
     };
 
     // Apply the drive curves to joystick inputs
@@ -97,7 +101,7 @@ void Chassis::driveControl(float forward,
         receivedRotateInput = true;
 
     } else if (receivedRotateInput) {
-        targetHeading = odom.getPose(false).theta;
+        targetHeading = odom.getPose(false).theta - headingOffset;
         headingPID.reset();
         headingPID.setGains({correction.kP, correction.kI, correction.kD, 0.0, 0.0});
         receivedRotateInput = false;
