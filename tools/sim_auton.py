@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MAIN_CPP = ROOT / "src" / "main.cpp"
-MAP_PNG = ROOT / "src" / "map.png"
+MAP_PNG = ROOT / "tools" / "img" / "map.png"
 OUTPUT_HTML = ROOT / "bin" / "auton_viewer.html"
 
 

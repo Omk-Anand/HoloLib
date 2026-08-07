@@ -24,3 +24,6 @@ docs/footer.html
 docs/style.css
 docs/doxygen-awesome*.css
 docs/doxygen-awesome*.js
+
+# Python
+__pycache__
