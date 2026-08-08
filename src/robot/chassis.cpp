@@ -26,7 +26,7 @@ void Chassis::calibrate() {
 }
 
 void Chassis::drive(float vx, float vy, float omega, float theta) {
-    theta = vexToMathRadians(theta);
+    theta = vexToMathRadians(90-theta);
     Eigen::Vector3f state(vx, vy, omega);
     Eigen::Matrix3f rotationMatrix{
         {std::cos(theta),  -std::sin(theta), 0}, //
@@ -44,10 +44,10 @@ void Chassis::drive(float vx, float vy, float omega, float theta) {
     if (max > 12000.0f) {
         motorVoltageVector *= 12000.0f / max;
     }
-    frontLeft.move_voltage(motorVoltageVector(0));
+    frontLeft.move_voltage(-motorVoltageVector(0));
     frontRight.move_voltage(motorVoltageVector(1));
     backRight.move_voltage(motorVoltageVector(2));
-    backLeft.move_voltage(motorVoltageVector(3));
+    backLeft.move_voltage(-motorVoltageVector(3));
 }
 
 void Chassis::brake() {
@@ -118,9 +118,9 @@ void Chassis::driveControl(float forward,
         }
     }
     if (fieldCentric) {
-        drive(forward, sideways, rotation, currentHeading);
+        drive(sideways, forward, rotation, currentHeading);
     } else {
-        drive(forward, sideways, rotation, 0);
+        drive(sideways, forward, rotation, 0);
     }
 }
 

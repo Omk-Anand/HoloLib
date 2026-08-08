@@ -90,7 +90,12 @@ public:
      * @b Example:
      * @code
      * // Get the latest tag-based pose estimate in radians.
-     * hololib::Pose tagPose = aprilTagLocalization.getPoseFromTag(true);
+     * tagOdom.startTask(100);
+     * while (true) {
+     *    hololib::Pose p = tagOdom.getPoseFromTag(false);
+     *    std::println("Tag pose: x: {}, y: {}, theta: {}", p.x, p.y, p.theta);
+     *    pros::delay(100);
+     * }
      * @endcode
      */
     Pose getPoseFromTag(bool useRadians = false);
