@@ -40,7 +40,7 @@ void turnToHeading(float targetDeg, MoveParams params, MoveSettings settings) {
             output = std::copysign(params.minSpeed, output);
         output = std::clamp(output, -params.maxRotationSpeed, params.maxRotationSpeed);
 
-        settings.chassis.xdrive(0.0f, 0.0f, output, curr.theta);
+        settings.chassis.drive(0.0f, 0.0f, output, curr.theta);
         prevError = error;
         pros::delay(10);
     }

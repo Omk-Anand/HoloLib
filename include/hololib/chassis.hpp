@@ -52,7 +52,7 @@ public:
     };
     void calibrate();
 
-    void xdrive(float vx, float vy, float omega, float theta);
+    void drive(float vx, float vy, float omega, float theta);
 
     void driveControl(float forward,
                       float sideways,

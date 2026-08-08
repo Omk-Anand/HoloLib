@@ -10,4 +10,7 @@ namespace hololib {
  * @return float The minimal error difference [-180, 180].
  */
 float getAngleError(float target, float current); 
+    
+float vexToMathRadians(float vexDegrees); 
+
 }; // namespace hololib

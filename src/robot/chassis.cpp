@@ -25,13 +25,12 @@ void Chassis::calibrate() {
     std::println("Chassis Calibrated!");
 }
 
-void Chassis::xdrive(float vx, float vy, float omega, float theta) {
-    constexpr float DEGREES_TO_RADIANS = M_PI / 180.0f;
-    theta *= DEGREES_TO_RADIANS;
+void Chassis::drive(float vx, float vy, float omega, float theta) {
+    theta = vexToMathRadians(theta);
     Eigen::Vector3f state(vx, vy, omega);
     Eigen::Matrix3f rotationMatrix{
-        {std::cos(theta),  std::sin(theta), 0}, //
-        {-std::sin(theta), std::cos(theta), 0}, //
+        {std::cos(theta),  -std::sin(theta), 0}, //
+        {std::sin(theta), std::cos(theta), 0}, //
         {0,                0,               1}  //
     };
     Eigen::Matrix<float, 4, 3> inverseKinematicsMatrix{
@@ -119,9 +118,9 @@ void Chassis::driveControl(float forward,
         }
     }
     if (fieldCentric) {
-        xdrive(forward, sideways, rotation, currentHeading);
+        drive(forward, sideways, rotation, currentHeading);
     } else {
-        xdrive(forward, sideways, rotation, 0);
+        drive(forward, sideways, rotation, 0);
     }
 }
 
