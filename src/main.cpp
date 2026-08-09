@@ -1,19 +1,24 @@
 #include "main.h"
+#include "Eigen/Core" // IWYU pragma: export
 #include "hololib/chassis.hpp"
 #include "hololib/config.hpp"
+#include "hololib/localization/ApriltagLocalization.hpp"
 #include "hololib/localization/odometry.hpp"
 #include "hololib/motions/motion_handler.hpp"
 #include "hololib/motions/motions.hpp"
 #include "hololib/util/GainScheduler.hpp"
 #include "hololib/util/modular_lift.hpp"
 #include "hololib/util/replay.hpp"
+#include "pros/ai_vision.hpp"
 #include "pros/imu.hpp"
+
+#include <cstdio>
 #include <print>
 
 // Motor ports (negative for reversing motor)
-int frontLPort = -3;
+int frontLPort = 3;
 int frontRPort = 2;
-int backLPort = -4;
+int backLPort = 4;
 int backRPort = 1;
 
 // IMU port
@@ -24,6 +29,24 @@ std::vector<LiftMotorConfig> lift_motor_configs = {
     {19, pros::MotorGear::blue}
 };
 
+Eigen::Matrix3f cameraMatrix = (Eigen::Matrix3f() << 383.57019326565296f * 0.5f,
+                                0.0f,
+                                322.50382974986405f * 0.5f,
+                                0.0f,
+                                385.93627187500545f * 0.5f,
+                                230.00229561364546f * 0.5f,
+                                0.0f,
+                                0.0f,
+                                1.0f)
+                                   .finished();
+
+Eigen::Vector<float, 5> distCoeffs = (Eigen::Vector<float, 5>() << -0.047271311979687029f,
+                                      0.19589273312693006f,
+                                      -0.0052232338824990303f,
+                                      0.00058677141664816013f,
+                                      -0.14778998923627218f)
+                                         .finished();
+
 pros::Controller master(pros::E_CONTROLLER_MASTER);
 
 // Initalize motors, IMU, odometry, and chassis
@@ -32,6 +55,7 @@ pros::Motor frontRight = pros::Motor(frontRPort, pros::MotorGear::blue);
 pros::Motor backLeft = pros::Motor(backLPort, pros::MotorGear::blue);
 pros::Motor backRight = pros::Motor(backRPort, pros::MotorGear::blue);
 pros::Imu imu = pros::Imu(imuPort);
+pros::AIVision visionSensor = pros::AIVision(8);
 hololib::Chassis chassis = hololib::Chassis(frontLeft, frontRight, backLeft, backRight, imu, odom);
 hololib::GainScheduler xSched = hololib::GainScheduler();
 hololib::GainScheduler ySched = hololib::GainScheduler();
@@ -40,8 +64,11 @@ hololib::GainScheduler thetaSched = hololib::GainScheduler();
 // Initialize odometry configuration
 hololib::ChassisConfig chassis_config = {
     .drivetrainWidth = 9.1, .drivetrainLength = 10.25, .wheelDiameter = 3.25, .gearRatio = 0.5};
-hololib::EncoderEKFOdometry odom = hololib::EncoderEKFOdometry(frontLeft, frontRight, backLeft, backRight, imu, chassis_config);
+hololib::EncoderEKFOdometry odom =
+    hololib::EncoderEKFOdometry(frontLeft, frontRight, backLeft, backRight, imu, chassis_config);
 const std::function<hololib::Pose(bool)> poseGetter = [](bool radians) { return odom.getPose(radians); };
+hololib::ApriltagLocalization tagOdom =
+    hololib::ApriltagLocalization(visionSensor, imu, poseGetter, cameraMatrix, distCoeffs);
 
 // Initialize obstacle manager
 hololib::ObstacleManager obstacles = hololib::ObstacleManager();
@@ -67,6 +94,7 @@ void initialize() {
     // Calibrate the chassis
     chassis.calibrate();
     odom.startTask();
+    tagOdom.startTask(100);
 
     // Set PID gains for chassis
     xSched.setGains({
@@ -117,7 +145,9 @@ void simulation() {}
 
 void autonomous() {
     // Example autonomous routine
-    odom.setPose(0, 0, 0);
+    odom.setPose(48, 10, 0);
+    hololib::Pose p = tagOdom.getPoseFromTag(false);
+
     chassisAsync(hololib::moveToPoint(24, 24));
     chassisAsync(hololib::turnToPoint(12, 12));
 
@@ -142,22 +172,22 @@ void autonomous() {
 }
 
 void opcontrol() {
-    odom.setPose(0, 0, 90);
+    odom.setPose(0, 0, 0);
 
     // Example drive curves
     hololib::Chassis::DriveCurve movement_curve{.curve_multipler = 1.01, .deadzone = 5, .minimum_output = 5};
     hololib::Chassis::DriveCurve rotation_curve{.curve_multipler = 1.028, .deadzone = 5, .minimum_output = 5};
 
-    hololib::DriverReplay::logReplayData(master, 100, poseGetter); // allows logging for driver replay
+    // hololib::DriverReplay::logReplayData(master, 100, poseGetter); // allows logging for driver replay
 
     while (true) {
-        // Recieve inputs from controller
+        // Receive inputs from controller
         int forward = master.get_analog(ANALOG_LEFT_Y);
         int sideways = master.get_analog(ANALOG_LEFT_X);
         int rotation = master.get_analog(ANALOG_RIGHT_X);
 
-        // Detects collisions utilizing multiple information from the motors (velocity current,
-        // motor load and effeciency)
+        // Detects collisions utilizing multiple information from the motors (velocity current, motor load and
+        // effeciency)
         if (chassis.detectCollision()) {
             hololib::DriverReplay::getControllerInput(master); // Log controller input
             std::println("Collision Detected!");
@@ -165,7 +195,7 @@ void opcontrol() {
 
         // minor heading correction to assist drivers (only on when no joystick output)
         chassis.driveControl(forward, sideways, rotation, {.movement = movement_curve, .rotation = rotation_curve},
-                             true, 90, {.correctionOn = true, .kP = 0.15f, .kI = 0.01f, .kD = 0.01f});
+                             true, 0.0f, {.correctionOn = true, .kP = 0.15f, .kI = 0.01f, .kD = 0.01f});
 
         pros::delay(20); // delay for buffer
     }

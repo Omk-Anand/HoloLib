@@ -52,7 +52,7 @@ public:
     };
     void calibrate();
 
-    void xdrive(float vx, float vy, float omega, float theta);
+    void drive(float vx, float vy, float omega, float theta);
 
     void driveControl(float forward,
                       float sideways,
@@ -79,6 +79,7 @@ private:
     const float MAX_DRIVE_INPUT;
     const uint32_t SETTLE_DELAY_MS;
     const float MAX_CORRECTION;
+    static constexpr float JOYSTICK_SCALING_FACTOR = 12000.0f / 127.0f; // Scale joystick input to motor voltage range
     PID headingPID;
     Timer settled;
     float targetHeading;

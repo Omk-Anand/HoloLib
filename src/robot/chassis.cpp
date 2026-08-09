@@ -4,6 +4,7 @@
 #include "hololib/util/PID.hpp"
 #include "hololib/util/Timer.hpp"
 #include "hololib/util/util.hpp"
+#include "pros/rtos.hpp"
 #include <cmath>
 #include <print>
 
@@ -24,11 +25,12 @@ void Chassis::calibrate() {
     std::println("Chassis Calibrated!");
 }
 
-void Chassis::xdrive(float vx, float vy, float omega, float theta) {
+void Chassis::drive(float vx, float vy, float omega, float theta) {
+    theta = vexToMathRadians(90-theta);
     Eigen::Vector3f state(vx, vy, omega);
     Eigen::Matrix3f rotationMatrix{
-        {std::cos(theta),  std::sin(theta), 0}, //
-        {-std::sin(theta), std::cos(theta), 0}, //
+        {std::cos(theta),  -std::sin(theta), 0}, //
+        {std::sin(theta), std::cos(theta), 0}, //
         {0,                0,               1}  //
     };
     Eigen::Matrix<float, 4, 3> inverseKinematicsMatrix{
@@ -38,14 +40,14 @@ void Chassis::xdrive(float vx, float vy, float omega, float theta) {
         {-1, 1, 1 }  //
     };
     Eigen::Vector4f motorVoltageVector = inverseKinematicsMatrix * rotationMatrix * state;
-    int max = motorVoltageVector.cwiseAbs().maxCoeff();
-    if (max > 12000) {
+    float max = motorVoltageVector.cwiseAbs().maxCoeff();
+    if (max > 12000.0f) {
         motorVoltageVector *= 12000.0f / max;
     }
-    frontLeft.move_voltage(motorVoltageVector(0));
+    frontLeft.move_voltage(-motorVoltageVector(0));
     frontRight.move_voltage(motorVoltageVector(1));
     backRight.move_voltage(motorVoltageVector(2));
-    backLeft.move_voltage(motorVoltageVector(3));
+    backLeft.move_voltage(-motorVoltageVector(3));
 }
 
 void Chassis::brake() {
@@ -62,8 +64,9 @@ void Chassis::driveControl(float forward,
                            bool fieldCentric,
                            float headingOffset,
                            DriveCorrection correction) {
+    
     if (!headingInitialized) {
-        targetHeading = odom.getPose(false).theta;
+        targetHeading = odom.getPose(false).theta - headingOffset;
         headingPID.setGains({correction.kP, correction.kI, correction.kD, 0.0, 0.0});
         headingInitialized = true;
     }
@@ -83,7 +86,7 @@ void Chassis::driveControl(float forward,
             output = c.minimum_output;
         }
 
-        return output * sign;
+        return output * sign * JOYSTICK_SCALING_FACTOR;
     };
 
     // Apply the drive curves to joystick inputs
@@ -97,7 +100,7 @@ void Chassis::driveControl(float forward,
         receivedRotateInput = true;
 
     } else if (receivedRotateInput) {
-        targetHeading = odom.getPose(false).theta;
+        targetHeading = odom.getPose(false).theta - headingOffset;
         headingPID.reset();
         headingPID.setGains({correction.kP, correction.kI, correction.kD, 0.0, 0.0});
         receivedRotateInput = false;
@@ -115,9 +118,9 @@ void Chassis::driveControl(float forward,
         }
     }
     if (fieldCentric) {
-        xdrive(forward, sideways, rotation, currentHeading);
+        drive(sideways, forward, rotation, currentHeading);
     } else {
-        xdrive(forward, sideways, rotation, 0);
+        drive(sideways, forward, rotation, 0);
     }
 }
 

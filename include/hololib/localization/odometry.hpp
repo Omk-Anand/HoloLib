@@ -92,7 +92,7 @@ public:
     /**
      * @brief Gets the pose of the robot.
      */
-    Pose getPose(bool radians);
+    Pose getPose(bool radians = false);
 
     void setVelocityCalculations(bool state);
     /**
