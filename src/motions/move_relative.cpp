@@ -72,7 +72,6 @@ void moveRelative(float forward, float sideways, bool holdHeading, MoveParams pa
         outT = std::clamp(outT, -params.maxRotationSpeed, params.maxRotationSpeed);
 
         settings.chassis.drive(outX_g, outY_g, outT, curr.theta);
-        pros::delay(10);
     }
 
     settings.chassis.brake();

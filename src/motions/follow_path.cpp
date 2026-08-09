@@ -223,7 +223,6 @@ void followPath(const std::vector<PathPoint>& path, float lookaheadDistance, Hea
         float outY_global = forward * forwardY + strafe * strafeY;
 
         settings.chassis.drive(outX_global, outY_global, turn, curr.theta);
-        pros::delay(10);
     }
 
     settings.chassis.brake();

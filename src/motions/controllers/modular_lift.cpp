@@ -1,6 +1,5 @@
 #include "hololib/util/modular_lift.hpp"
 #include <cmath>
-#include <iostream>
 
 ModularLift::ModularLift(const std::vector<LiftMotorConfig>& m_configs, LiftMechanism t, LiftConfig c)
     : type(t), config(c), is_running(false), cancel_request(false), is_settled(false) {
@@ -63,11 +62,17 @@ void ModularLift::moveTo(float target_motor_degrees) {
 }
 
 void ModularLift::startTask() {
+    // A cancelled task exits controlLoopImpl and clears is_running, but the
+    // optional still holds the finished task. Drop it so the lift can be
+    // driven again after a cancel() instead of being stuck forever.
+    if (task.has_value() && !is_running) {
+        task->remove();
+        task.reset();
+    }
+
     if (!task.has_value()) {
         is_running = true;
         task.emplace([this] { this->controlLoopImpl(); }, "ModularLiftTask");
-    } else {
-        std::cout << "[ModularLift] WARNING: Tried to start task, but it has already been started!" << std::endl;
     }
 }
 

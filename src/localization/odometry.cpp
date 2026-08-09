@@ -57,6 +57,10 @@ void EncoderEKFOdometry::update(uint32_t period_ms) {
         return (std::isinf(v) || std::isnan(v)) ? prev : v;
     };
 
+    // Velocities and the IMU trust factor are per-second, so they have to scale
+    // with the real loop period rather than assuming the 10 ms default.
+    const float dt = (period_ms > 0 ? static_cast<float>(period_ms) : 10.0f) / 1000.0f;
+
     while (true) {
         float raw_h = imu.get_rotation();
         float current_heading_meas = (std::isinf(raw_h) || std::isnan(raw_h)) ? prev_heading : raw_h * DEG2RAD;
@@ -66,6 +70,11 @@ void EncoderEKFOdometry::update(uint32_t period_ms) {
         }
 
         if (useTrackingWheels) {
+            // Held across the sensor reads too, not just the pose write:
+            // addTrackingWheel/clearTrackingWheels can resize these vectors from
+            // another task while this loop is walking them.
+            poseMutex.take();
+
             const int n = static_cast<int>(trackingWheelConfigs.size());
 
             Eigen::VectorXf measured_deltas(n);
@@ -104,7 +113,11 @@ void EncoderEKFOdometry::update(uint32_t period_ms) {
                 dy_local = sumDyVertical / static_cast<float>(numVertical);
             }
 
-            if (numHorizontal == 0) {
+            // Fall back to the motor encoders for whichever axis has no tracking
+            // wheel. Read and advance the encoder state exactly once: doing it in
+            // two separate blocks meant the first consumed the delta and the
+            // second always measured zero, silently killing that axis.
+            if (numHorizontal == 0 || numVertical == 0) {
                 float raw_fl_tw = safeEnc(frontLeft, prev_fl);
                 float raw_fr_tw = safeEnc(frontRight, prev_fr);
                 float raw_bl_tw = safeEnc(backLeft, prev_bl);
@@ -113,30 +126,19 @@ void EncoderEKFOdometry::update(uint32_t period_ms) {
                 Eigen::Vector4f prev_enc_v(prev_fl, prev_fr, prev_bl, prev_br);
                 Eigen::Vector4f wheel_deltas_motor = (raw_enc - prev_enc_v) * d_per_deg;
                 Eigen::Vector2f motor_local = kinematics * wheel_deltas_motor;
-                dx_local = motor_local.x();
+
+                if (numHorizontal == 0) {
+                    dx_local = motor_local.x();
+                }
+                if (numVertical == 0) {
+                    dy_local = motor_local.y();
+                }
+
                 prev_fl = raw_fl_tw;
                 prev_fr = raw_fr_tw;
                 prev_bl = raw_bl_tw;
                 prev_br = raw_br_tw;
             }
-
-            if (numVertical == 0) {
-                float raw_fl_tw = safeEnc(frontLeft, prev_fl);
-                float raw_fr_tw = safeEnc(frontRight, prev_fr);
-                float raw_bl_tw = safeEnc(backLeft, prev_bl);
-                float raw_br_tw = safeEnc(backRight, prev_br);
-                Eigen::Vector4f raw_enc(raw_fl_tw, raw_fr_tw, raw_bl_tw, raw_br_tw);
-                Eigen::Vector4f prev_enc_v(prev_fl, prev_fr, prev_bl, prev_br);
-                Eigen::Vector4f wheel_deltas_motor = (raw_enc - prev_enc_v) * d_per_deg;
-                Eigen::Vector2f motor_local = kinematics * wheel_deltas_motor;
-                dy_local = motor_local.y();
-                prev_fl = raw_fl_tw;
-                prev_fr = raw_fr_tw;
-                prev_bl = raw_bl_tw;
-                prev_br = raw_br_tw;
-            }
-
-            poseMutex.take();
 
             if (kfEnabled) {
                 ekf.predict(dx_local, dy_local, d_theta_meas);
@@ -144,7 +146,7 @@ void EncoderEKFOdometry::update(uint32_t period_ms) {
                 ekf.updateTrackingWheels(trackingWheelConfigs, measured_deltas, dx_local, dy_local, d_theta_meas,
                                          trackingWheelMeasNoise);
 
-                float current_w = d_theta_meas / 0.01f;
+                float current_w = d_theta_meas / dt;
                 float dynamic_R = measurementNoise + std::abs(current_w) * 0.005f;
                 ekf.updateIMU(current_heading_meas, dynamic_R);
 
@@ -155,9 +157,9 @@ void EncoderEKFOdometry::update(uint32_t period_ms) {
                 currentPose.y = ekf.getY();
                 currentPose.theta = ekf.getTheta();
                 if (velocityCalculationsOn) {
-                    currentPose.velocity.vx = dx_local / 0.01f;
-                    currentPose.velocity.vy = dy_local / 0.01f;
-                    currentPose.velocity.w = d_theta_meas / 0.01f;
+                    currentPose.velocity.vx = dx_local / dt;
+                    currentPose.velocity.vy = dy_local / dt;
+                    currentPose.velocity.w = d_theta_meas / dt;
                 }
             } else {
                 float step_dist = std::sqrt(dx_local * dx_local + dy_local * dy_local);
@@ -173,9 +175,9 @@ void EncoderEKFOdometry::update(uint32_t period_ms) {
                 currentPose.theta += d_theta_meas;
 
                 if (velocityCalculationsOn) {
-                    currentPose.velocity.vx = dx_local / 0.01f;
-                    currentPose.velocity.vy = dy_local / 0.01f;
-                    currentPose.velocity.w = d_theta_meas / 0.01f;
+                    currentPose.velocity.vx = dx_local / dt;
+                    currentPose.velocity.vy = dy_local / dt;
+                    currentPose.velocity.w = d_theta_meas / dt;
                 }
             }
             poseMutex.give();
@@ -199,7 +201,7 @@ void EncoderEKFOdometry::update(uint32_t period_ms) {
             if (kfEnabled) {
                 ekf.predict(local_delta.x(), local_delta.y(), d_theta_wheels);
 
-                float current_w = d_theta_meas / 0.01f;
+                float current_w = d_theta_meas / dt;
                 float dynamic_R = measurementNoise + std::abs(current_w) * 0.005f;
                 ekf.updateIMU(current_heading_meas, dynamic_R);
 
@@ -210,9 +212,9 @@ void EncoderEKFOdometry::update(uint32_t period_ms) {
                 currentPose.y = ekf.getY();
                 currentPose.theta = ekf.getTheta();
                 if (velocityCalculationsOn) {
-                    currentPose.velocity.vx = local_delta.x() / 0.01f;
-                    currentPose.velocity.vy = local_delta.y() / 0.01f;
-                    currentPose.velocity.w = d_theta_meas / 0.01f;
+                    currentPose.velocity.vx = local_delta.x() / dt;
+                    currentPose.velocity.vy = local_delta.y() / dt;
+                    currentPose.velocity.w = d_theta_meas / dt;
                 }
             } else {
                 float step_dist = local_delta.norm();
@@ -228,9 +230,9 @@ void EncoderEKFOdometry::update(uint32_t period_ms) {
                 currentPose.theta += d_theta_wheels;
 
                 if (velocityCalculationsOn) {
-                    currentPose.velocity.vx = local_delta.x() / 0.01f;
-                    currentPose.velocity.vy = local_delta.y() / 0.01f;
-                    currentPose.velocity.w = d_theta_meas / 0.01f;
+                    currentPose.velocity.vx = local_delta.x() / dt;
+                    currentPose.velocity.vy = local_delta.y() / dt;
+                    currentPose.velocity.w = d_theta_meas / dt;
                 }
             }
             poseMutex.give();
@@ -246,6 +248,10 @@ void EncoderEKFOdometry::update(uint32_t period_ms) {
 }
 
 void EncoderEKFOdometry::addTrackingWheel(TrackingWheelConfig config) {
+    // Guard the mutation: the tracking task iterates these vectors, and a
+    // push_back that reallocates while it reads would leave it on freed memory.
+    poseMutex.take();
+
     trackingWheelConfigs.push_back(config);
     trackingWheelSensors.emplace_back(config.port);
 
@@ -256,6 +262,8 @@ void EncoderEKFOdometry::addTrackingWheel(TrackingWheelConfig config) {
     ekf.setTrackingWheelNoise(0.0003f, 0.0003f, 0.001f);
     trackingWheelMeasNoise = 0.0005f;
 
+    poseMutex.give();
+
     std::println("[EncoderEKFOdometry] Added tracking wheel on port {}{} offset=({}, {}) dia={} ratio={}",
                  static_cast<int>(config.port),
                  (config.orientation == TrackingWheelOrientation::HORIZONTAL ? " (horizontal)" : " (vertical)"),
@@ -263,12 +271,29 @@ void EncoderEKFOdometry::addTrackingWheel(TrackingWheelConfig config) {
 }
 
 void EncoderEKFOdometry::clearTrackingWheels() {
+    poseMutex.take();
+
     trackingWheelConfigs.clear();
     trackingWheelSensors.clear();
     prevTrackingPositions.clear();
     useTrackingWheels = false;
 
+    // Resync the motor encoder baseline. It can be stale by however long the
+    // tracking wheels were driving odometry, and without this the first motor
+    // encoder update would apply that entire accumulated delta as one jump.
+    auto safePos = [](pros::Motor& m, float prev) {
+        float v = m.get_position();
+        return (std::isinf(v) || std::isnan(v)) ? prev : v;
+    };
+    prev_fl = safePos(frontLeft, prev_fl);
+    prev_fr = safePos(frontRight, prev_fr);
+    prev_bl = safePos(backLeft, prev_bl);
+    prev_br = safePos(backRight, prev_br);
+
     ekf.setProcessNoise(0.001f, 0.001f, 0.003f, 0.0001f);
+
+    poseMutex.give();
+
     std::println("[EncoderEKFOdometry] Tracking wheels cleared, reverted to motor encoder odometry");
 }
 
@@ -279,6 +304,22 @@ void EncoderEKFOdometry::setPose(float x, float y, float theta) {
 
     currentPose = {x, y, theta_rad};
     prev_heading = theta_rad;
+
+    // Re-baseline the encoders against the new pose. Any motion accumulated
+    // since the last update belongs to the old pose, so leaving these alone
+    // would apply that leftover delta on top of the pose just set.
+    auto safePos = [](pros::Motor& m, float prev) {
+        float v = m.get_position();
+        return (std::isinf(v) || std::isnan(v)) ? prev : v;
+    };
+    prev_fl = safePos(frontLeft, prev_fl);
+    prev_fr = safePos(frontRight, prev_fr);
+    prev_bl = safePos(backLeft, prev_bl);
+    prev_br = safePos(backRight, prev_br);
+
+    for (size_t i = 0; i < trackingWheelSensors.size(); ++i) {
+        prevTrackingPositions[i] = static_cast<float>(trackingWheelSensors[i].get_position());
+    }
 
     ekf.setPose(x, y, theta_rad);
 

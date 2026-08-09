@@ -63,6 +63,11 @@ void PoseEKF::updateIMU(float measured_theta, float dynamic_R) {
     float y = measured_theta - x(2);
     y = std::remainder(y, 2.0f * M_PI);
     float S = (H * P * H.transpose())(0, 0) + dynamic_R;
+    // setPose() zeroes P, so S is zero here until the covariance grows again if
+    // the caller also passes no measurement noise. Skip instead of dividing.
+    if (!std::isfinite(S) || std::abs(S) < 1e-12f) {
+        return;
+    }
     Eigen::Vector3f K = P * H.transpose() / S;
     x = x + K * y;
     x(2) = std::remainder(x(2), 2.0f * M_PI);
@@ -105,7 +110,15 @@ void PoseEKF::updateTrackingWheels(const std::vector<TrackingWheelConfig>& confi
     Eigen::VectorXf y_innov = measured_deltas - z_pred;
     Eigen::MatrixXf R_tw = Eigen::MatrixXf::Identity(n, n) * wheel_noise;
     Eigen::MatrixXf S = H_tw * P * H_tw.transpose() + R_tw;
-    Eigen::MatrixXf K = P * H_tw.transpose() * S.inverse();
+
+    // Solve rather than invert, and bail if the result isn't finite. A singular
+    // S (zero wheel noise, duplicate wheel geometry) would otherwise push NaN
+    // into the state and every later pose read would be garbage.
+    Eigen::MatrixXf K = S.colPivHouseholderQr().solve(H_tw * P).transpose();
+    if (!K.allFinite()) {
+        return;
+    }
+
     x += K * y_innov;
     x(2) = std::remainder(x(2), 2.0f * static_cast<float>(M_PI));
 

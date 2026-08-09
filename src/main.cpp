@@ -56,17 +56,21 @@ pros::Motor backLeft = pros::Motor(backLPort, pros::MotorGear::blue);
 pros::Motor backRight = pros::Motor(backRPort, pros::MotorGear::blue);
 pros::Imu imu = pros::Imu(imuPort);
 pros::AIVision visionSensor = pros::AIVision(8);
-hololib::Chassis chassis = hololib::Chassis(frontLeft, frontRight, backLeft, backRight, imu, odom);
-hololib::GainScheduler xSched = hololib::GainScheduler();
-hololib::GainScheduler ySched = hololib::GainScheduler();
-hololib::GainScheduler thetaSched = hololib::GainScheduler();
 
-// Initialize odometry configuration
+// Initialize odometry configuration. This has to be constructed before chassis:
+// EncoderEKFOdometry reads the motors and IMU in its constructor, and chassis
+// binds a reference to it, so defining chassis first would capture an object
+// that has not run its constructor yet.
 hololib::ChassisConfig chassis_config = {
     .drivetrainWidth = 9.1, .drivetrainLength = 10.25, .wheelDiameter = 3.25, .gearRatio = 0.5};
 hololib::EncoderEKFOdometry odom =
     hololib::EncoderEKFOdometry(frontLeft, frontRight, backLeft, backRight, imu, chassis_config);
 const std::function<hololib::Pose(bool)> poseGetter = [](bool radians) { return odom.getPose(radians); };
+
+hololib::Chassis chassis = hololib::Chassis(frontLeft, frontRight, backLeft, backRight, imu, odom);
+hololib::GainScheduler xSched = hololib::GainScheduler();
+hololib::GainScheduler ySched = hololib::GainScheduler();
+hololib::GainScheduler thetaSched = hololib::GainScheduler();
 hololib::ApriltagLocalization tagOdom =
     hololib::ApriltagLocalization(visionSensor, imu, poseGetter, cameraMatrix, distCoeffs);
 

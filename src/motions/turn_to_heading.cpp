@@ -42,7 +42,6 @@ void turnToHeading(float targetDeg, MoveParams params, MoveSettings settings) {
 
         settings.chassis.drive(0.0f, 0.0f, output, curr.theta);
         prevError = error;
-        pros::delay(10);
     }
 
     settings.chassis.brake();

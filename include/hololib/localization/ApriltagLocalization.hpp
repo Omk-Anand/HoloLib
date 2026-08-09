@@ -114,7 +114,13 @@ private:
     pros::Imu& imu;
     std::function<hololib::Pose(bool)> odomPoseGetter;
     const float IPPE_SMALL = 1e-6f;
-    const float APRILTAG_SIZE = 0.708661f; // 18mm tag size in inches
+    /**
+     * Tag edge length, in inches. This sets the scale of the IPPE solution, so
+     * the translation it returns comes back in these units and must match the
+     * units used by FIELD_TAGS. Measure the black square of the printed tag and
+     * update this if your tags are a different size.
+     */
+    const float APRILTAG_SIZE = 2.0f;
     static constexpr float RAD2DEG = 180.0f / M_PI;
     const Eigen::Matrix3f cameraMatrix;
     const Eigen::Vector<float, 5> distCoeffs;

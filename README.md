@@ -137,7 +137,7 @@ void opcontrol() {
       rotation,
       {.movement = movement_curve, .rotation = rotation_curve},
       true, // turn field-centric driving on
-      90, // define initial heading offset
+      0.0f, // heading offset, redefines which way "forward" points
       {.correctionOn = true, .kP = 0.15f, .kI = 0.01f, .kD = 0.01f} // active heading correction
     );
 

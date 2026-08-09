@@ -123,7 +123,9 @@ Eigen::Vector2f ObstacleManager::getPotentialFieldTarget(const Eigen::Vector2f& 
         if (dist_to_boundary <= 0.0f) {
             Eigen::Vector2f dir = (dist_to_center > 1e-4f) ? to_obs / dist_to_center : Eigen::Vector2f(1.0f, 0.0f);
             F_repulsive += dir * pf_kr * 5.0f;
-        } else if (dist_to_boundary <= pf_influence_radius) {
+        } else if (dist_to_boundary <= pf_influence_radius && pf_influence_radius > 1e-6f) {
+            // dist_to_center is guaranteed positive here (dist_to_boundary > 0
+            // implies dist_to_center > effective_radius >= 1), so this is safe.
             Eigen::Vector2f dir = to_obs / dist_to_center;
             float factor = 1.0f - (dist_to_boundary / pf_influence_radius);
 
@@ -143,6 +145,11 @@ Eigen::Vector2f ObstacleManager::getPotentialFieldTarget(const Eigen::Vector2f& 
     Eigen::Vector2f F_total = F_attractive + F_repulsive;
     if (F_total.norm() < 1e-3f) {
         F_total = F_attractive + Eigen::Vector2f(-F_attractive.y(), F_attractive.x()) * 0.5f;
+    }
+    // With ka == 0 the nudge above is still zero, and normalizing a zero vector
+    // yields NaN that would propagate straight into the motion targets.
+    if (F_total.norm() < 1e-6f) {
+        return target_pos;
     }
     float step_size = std::min(10.0f, dist_to_target);
     return robot_pos + F_total.normalized() * step_size;

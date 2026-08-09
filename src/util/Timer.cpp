@@ -21,8 +21,9 @@ uint32_t Timer::getTimeSet() {
 
 uint32_t Timer::getTimeLeft() {
     this->update();
-    const int delta = m_period - m_timeWaited;
-    return (delta > 0) ? delta : 0;
+    // Compare before subtracting: both operands are unsigned, so an expired
+    // timer would otherwise wrap to a huge value instead of going negative.
+    return (m_timeWaited < m_period) ? (m_period - m_timeWaited) : 0;
 }
 
 uint32_t Timer::getTimePassed() {
@@ -32,16 +33,14 @@ uint32_t Timer::getTimePassed() {
 
 bool Timer::isDone() {
     this->update();
-    const int delta = m_period - m_timeWaited;
-    return delta <= 0;
+    return m_timeWaited >= m_period;
 }
 
 bool Timer::isPaused() {
-    // Replicates the specific behavior from the first implementation's isPaused()
-    const uint32_t time = pros::millis();
-    if (!m_paused) {
-        m_timeWaited += time - m_lastTime;
-    }
+    // Go through update() so m_lastTime advances with m_timeWaited. Accumulating
+    // without moving m_lastTime made every call re-count the same elapsed span,
+    // running the timer fast whenever isPaused() was polled.
+    this->update();
     return m_paused;
 }
 

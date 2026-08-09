@@ -387,7 +387,7 @@ void opcontrol() {
       master.get_analog(ANALOG_RIGHT_X),   // rotate
       {.movement = movement_curve, .rotation = rotation_curve},
       true,   // field-centric
-      90,     // heading offset
+      0.0f,   // heading offset
       {.correctionOn = true, .kP = 0.15f, .kI = 0.01f, .kD = 0.01f}
     );
     pros::delay(20);
@@ -408,7 +408,7 @@ Field-centric relies on the IMU heading. If you skipped `calibrate()` or the IMU
 drifts, "forward" will drift with it. The `headingOffset` redefines which way
 "forward" points, for example to match your driver's view from across the field.
 
-There's also `chassis.xdrive(vx, vy, omega, theta)` if you want to command the
+There's also `chassis.drive(vx, vy, omega, theta)` if you want to command the
 drive directly with no curves or correction in the way, and `chassis.brake()`.
 
 ---
